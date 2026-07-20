@@ -35,6 +35,7 @@ import Yaml.Encode
 
 port centerViewOnCell : ( Int, Int ) -> Cmd msg
 port checkLocation : Int -> Cmd msg
+port checkLocations : List Int -> Cmd msg
 port connect : Encode.Value -> Cmd msg
 port generateBoard : Encode.Value -> Cmd msg
 port goal : () -> Cmd msg
@@ -280,6 +281,7 @@ type Msg
     | SolveSelectedCellRatioInputChanged String
     | SolveSingleCandidatesPressed
     | SyncSolvedFromServerPressed
+    | SyncSolvedToServerPressed
     | ToggleCandidateModePressed
     | ToggleHighlightModePressed
     | TrapDurationChanged String
@@ -1893,6 +1895,11 @@ update msg model =
             , Cmd.none
             )
                 |> andThen (updateState True)
+
+        SyncSolvedToServerPressed ->
+            ( model
+            , checkLocations (Set.toList model.solvedLocations)
+            )
 
         ToggleCandidateModePressed ->
             ( { model | candidateMode = not model.candidateMode }
@@ -6714,7 +6721,7 @@ viewMenuOptionsBoard model =
                         (String.join
                             "\n"
                             [  "How scouting of locations (creating a hint) are handled:"
-                            ,  " - Auto: Locations are automatically scouted when fully reavealed."
+                            ,  " - Auto: Locations are automatically scouted when fully revealed."
                             ,  " - Manual: Locations can be scouted when fully revealed by pressing a button."
                             ,  " - Disabled: Locations cannot be scouted."
                             ]
@@ -8038,6 +8045,15 @@ viewInfoPanelDebug model =
                         []
                     , Html.text "Enable death link"
                     ]
+            , if model.gameIsLocal then
+                Html.text ""
+
+              else
+                Html.button
+                    [ HA.class "button"
+                    , HE.onClick SyncSolvedToServerPressed
+                    ]
+                    [ Html.text "Sync solved to server" ]
             ]
         ]
 

@@ -137,6 +137,14 @@ app.ports.checkLocation?.subscribe(data => {
     }
 })
 
+app.ports.checkLocations?.subscribe(data => {
+    try {
+        client.check(...data)
+    } catch (error) {
+        console.error('Check locations error:', error)
+    }
+})
+
 app.ports.goal?.subscribe(() => {
     client.goal()
 })
