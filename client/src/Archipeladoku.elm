@@ -548,7 +548,7 @@ update msg model =
                 boardCells =
                     Dict.get model.selectedCell model.cellBoards
                         |> Maybe.withDefault []
-                        |> List.concatMap getAreaCells
+                        |> List.concatMap .cells
                         |> Set.fromList
             in
             ( { model
@@ -790,7 +790,7 @@ update msg model =
                 boardCells =
                     Dict.get model.selectedCell model.cellBoards
                         |> Maybe.withDefault []
-                        |> List.concatMap getAreaCells
+                        |> List.concatMap .cells
                         |> Set.fromList
 
                 cellIsValidTarget : ( Int, Int ) -> Bool
@@ -1347,7 +1347,7 @@ update msg model =
                 boardCells =
                     Dict.get model.selectedCell model.cellBoards
                         |> Maybe.withDefault []
-                        |> List.concatMap getAreaCells
+                        |> List.concatMap .cells
                         |> Set.fromList
 
                 targets : List ( ( Int, Int ), Int )
@@ -1589,11 +1589,11 @@ update msg model =
                                 (&&)
                                     (List.any
                                         (\cell -> not (Set.member cell model.givens))
-                                        (getAreaCells board)
+                                        board.cells
                                     )
                                     (List.all
                                         (cellIsVisible model)
-                                        (getAreaCells board)
+                                        board.cells
                                     )
                             )
                         |> List.head
@@ -1665,7 +1665,7 @@ update msg model =
                 boardCells =
                     Dict.get model.selectedCell model.cellBoards
                         |> Maybe.withDefault []
-                        |> List.concatMap getAreaCells
+                        |> List.concatMap .cells
                         |> Set.fromList
 
                 cellCandidates : List ( Int, Int )
@@ -1840,7 +1840,7 @@ update msg model =
                 boardCells =
                     Dict.get model.selectedCell model.cellBoards
                         |> Maybe.withDefault []
-                        |> List.concatMap getAreaCells
+                        |> List.concatMap .cells
                         |> Set.fromList
 
                 singleCandidates : Dict ( Int, Int ) Int
@@ -2106,6 +2106,7 @@ type alias Area =
     , startCol : Int
     , endRow : Int
     , endCol : Int
+    , cells : List ( Int, Int )
     }
 
 
@@ -2535,7 +2536,7 @@ encodeUnlockMap unlockMap =
 
 areaDecoder : Decode.Decoder Area
 areaDecoder =
-    Decode.map4 Area
+    Decode.map4 buildArea
         (Decode.index 0 Decode.int)
         (Decode.index 1 Decode.int)
         (Decode.index 2 Decode.int)
@@ -3798,7 +3799,7 @@ updateHighlight model =
                 | highlightedCells =
                     Dict.get model.selectedCell model.cellBoards
                         |> Maybe.withDefault []
-                        |> List.concatMap getAreaCells
+                        |> List.concatMap .cells
                         |> Set.fromList
                 , highlightedNumbers = Set.empty
             }
@@ -3811,15 +3812,15 @@ updateHighlight model =
                         Set.empty
                         [ Dict.get model.selectedCell model.cellBlocks
                             |> Maybe.withDefault []
-                            |> List.concatMap getAreaCells
+                            |> List.concatMap .cells
                             |> Set.fromList
                         , Dict.get model.selectedCell model.cellRows
                             |> Maybe.withDefault []
-                            |> List.concatMap getAreaCells
+                            |> List.concatMap .cells
                             |> Set.fromList
                         , Dict.get model.selectedCell model.cellCols
                             |> Maybe.withDefault []
-                            |> List.concatMap getAreaCells
+                            |> List.concatMap .cells
                             |> Set.fromList
                         ]
                 , highlightedNumbers = Set.empty
@@ -3962,7 +3963,7 @@ updateState triggerAnimations model =
                     , updateStateChanges triggerAnimations
                     , updateStateErrors
                     , updateStateRemoveInvalidCandidates
-                    , updateStateErrors
+                    , updateStateDropCandidateErrors
                     , updateStateScoutLocations
                     , updateStateGoal
                     , updateStateHighlight
@@ -4112,6 +4113,25 @@ updateStateRemoveInvalidCandidates model =
     )
 
 
+updateStateDropCandidateErrors : Model -> ( Model, Cmd Msg )
+updateStateDropCandidateErrors model =
+    ( { model
+        | errors =
+            Dict.filter
+                (\_ error ->
+                    case error of
+                        NumberError _ ->
+                            True
+
+                        CandidateErrors _ ->
+                            False
+                )
+                model.errors
+      }
+    , Cmd.none
+    )
+
+
 updateStateCheckLocations : Model -> ( Model, Cmd Msg )
 updateStateCheckLocations model =
     ( { model | pendingCheckLocations = Set.empty }
@@ -4200,8 +4220,8 @@ updateStateCellChange updatedCell initialModel =
                         cellToBlockId ( block.startRow, block.startCol )
                 in
                 if (not <| Set.member blockId model.solvedLocations)
-                    && List.all (cellIsSolved model) (getAreaCells block)
-                    && List.all (cellIsVisible model) (getAreaCells block)
+                    && List.all (cellIsSolved model) block.cells
+                    && List.all (cellIsVisible model) block.cells
                 then
                     ( { model
                         | pendingCheckLocations =
@@ -4232,8 +4252,8 @@ updateStateCellChange updatedCell initialModel =
                         cellToRowId ( row.startRow, row.startCol )
                 in
                 if (not <| Set.member rowId model.solvedLocations)
-                    && List.all (cellIsSolved model) (getAreaCells row)
-                    && List.all (cellIsVisible model) (getAreaCells row)
+                    && List.all (cellIsSolved model) row.cells
+                    && List.all (cellIsVisible model) row.cells
                 then
                     ( { model
                         | pendingCheckLocations =
@@ -4264,8 +4284,8 @@ updateStateCellChange updatedCell initialModel =
                         cellToColId ( col.startRow, col.startCol )
                 in
                 if (not <| Set.member colId model.solvedLocations)
-                    && List.all (cellIsSolved model) (getAreaCells col)
-                    && List.all (cellIsVisible model) (getAreaCells col)
+                    && List.all (cellIsSolved model) col.cells
+                    && List.all (cellIsVisible model) col.cells
                 then
                     ( { model
                         | pendingCheckLocations =
@@ -4296,8 +4316,8 @@ updateStateCellChange updatedCell initialModel =
                         cellToBoardId ( board.startRow, board.startCol )
                 in
                 if (not <| Set.member boardId model.solvedLocations)
-                    && List.all (cellIsSolved model) (getAreaCells board)
-                    && List.all (cellIsVisible model) (getAreaCells board)
+                    && List.all (cellIsSolved model) board.cells
+                    && List.all (cellIsVisible model) board.cells
                 then
                     ( { model
                         | pendingCheckLocations =
@@ -4370,7 +4390,7 @@ unlockBlock triggerAnimations block model =
                         area.startRow == Tuple.first block
                             && area.startCol == Tuple.second block
                     )
-                |> Maybe.map getAreaCells
+                |> Maybe.map .cells
                 |> Maybe.withDefault []
                 |> Set.fromList
 
@@ -4393,7 +4413,7 @@ unlockBlock triggerAnimations block model =
                 |> List.filterMap
                     (\area ->
                         if
-                            getAreaCells area
+                            area.cells
                                 |> Set.fromList
                                 |> Set.Extra.isSubsetOf newVisibleCells
                         then
@@ -4481,25 +4501,37 @@ getBoardErrors model =
             let
                 areaCells : List ( Int, Int )
                 areaCells =
-                    getAreaCells area
+                    area.cells
+
+                placedByValue : Dict Int (Set ( Int, Int ))
+                placedByValue =
+                    List.foldl
+                        (\areaCell dict ->
+                            if Set.member areaCell model.visibleCells then
+                                case getCellValue model areaCell |> Maybe.andThen cellValueToInt of
+                                    Just number ->
+                                        Dict.update
+                                            number
+                                            (Maybe.withDefault Set.empty >> Set.insert areaCell >> Just)
+                                            dict
+
+                                    Nothing ->
+                                        dict
+
+                            else
+                                dict
+                        )
+                        Dict.empty
+                        areaCells
+
+                getConflictingCells : ( Int, Int ) -> Int -> Set ( Int, Int )
+                getConflictingCells cell number =
+                    Dict.get number placedByValue
+                        |> Maybe.withDefault Set.empty
+                        |> Set.remove cell
             in
             List.foldl
                 (\cell acc ->
-                    let
-                        getConflictingCells : Int -> Set ( Int, Int )
-                        getConflictingCells number =
-                            areaCells
-                                |> List.filter ((/=) cell)
-                                |> List.filter (\areaCell -> Set.member areaCell model.visibleCells)
-                                |> List.filter
-                                    (\areaCell ->
-                                        getCellValue model areaCell
-                                            |> Maybe.andThen cellValueToInt
-                                            |> Maybe.map ((==) number)
-                                            |> Maybe.withDefault False
-                                    )
-                                |> Set.fromList
-                    in
                     case getCellValue model cell of
                         Just (Given v) ->
                             acc
@@ -4508,7 +4540,7 @@ getBoardErrors model =
                             let
                                 conflictingCells : Set ( Int, Int )
                                 conflictingCells =
-                                    getConflictingCells v
+                                    getConflictingCells cell v
                             in
                             if Set.isEmpty conflictingCells then
                                 acc
@@ -4537,7 +4569,7 @@ getBoardErrors model =
                                                 let
                                                     conflictingCells : Set ( Int, Int )
                                                     conflictingCells =
-                                                        getConflictingCells number
+                                                        getConflictingCells cell number
                                                 in
                                                 if Set.isEmpty conflictingCells then
                                                     Nothing
@@ -4655,7 +4687,7 @@ updateStateSolvedArea triggerAnimations cellAreas toId ( row, col ) model =
             Dict.get ( row, col ) cellAreas
                 |> Maybe.withDefault []
                 |> List.Extra.find (\area -> area.startRow == row && area.startCol == col)
-                |> Maybe.map getAreaCells
+                |> Maybe.map .cells
                 |> Maybe.withDefault []
     in
     ( { model
@@ -4688,7 +4720,7 @@ updateStateSolvedBoard triggerAnimations cellAreas ( row, col ) model =
             Dict.get ( row, col ) cellAreas
                 |> Maybe.withDefault []
                 |> List.Extra.find (\area -> area.startRow == row && area.startCol == col)
-                |> Maybe.map getAreaCells
+                |> Maybe.map .cells
                 |> Maybe.withDefault []
     in
     ( { model | solvedLocations = Set.insert (cellToBoardId ( row, col )) model.solvedLocations }
@@ -4848,7 +4880,7 @@ getValidCellCandidates model cell =
             let
                 numbersInArea : Set Int
                 numbersInArea =
-                    getAreaCells area
+                    area.cells
                         |> List.filter ((/=) cell)
                         |> List.filter (\areaCell -> Set.member areaCell model.visibleCells)
                         |> List.filterMap (getCellValue model)
@@ -5162,6 +5194,21 @@ blockSizeToDimensions blockSize =
             ( 1, 1 )
 
 
+buildArea : Int -> Int -> Int -> Int -> Area
+buildArea startRow startCol endRow endCol =
+    { startRow = startRow
+    , startCol = startCol
+    , endRow = endRow
+    , endCol = endCol
+    , cells =
+        List.concatMap
+            (\row ->
+                List.map (Tuple.pair row) (List.range startCol endCol)
+            )
+            (List.range startRow endRow)
+    }
+
+
 buildCellAreasMap : List Area -> Dict ( Int, Int ) (List Area)
 buildCellAreasMap areas =
     List.foldl
@@ -5169,7 +5216,7 @@ buildCellAreasMap areas =
             let
                 areaCells : List ( Int, Int )
                 areaCells =
-                    getAreaCells area
+                    area.cells
             in
             List.foldl
                 (\cell acc2 ->
@@ -5186,17 +5233,6 @@ buildCellAreasMap areas =
         )
         Dict.empty
         areas
-
-
-getAreaCells : Area -> List ( Int, Int )
-getAreaCells area =
-    List.concatMap
-        (\row ->
-            List.map
-                (Tuple.pair row)
-                (List.range area.startCol area.endCol)
-        )
-        (List.range area.startRow area.endRow)
 
 
 maxNumberOfBoards : Int -> Int
@@ -5691,7 +5727,7 @@ loadSavedGame save model =
                                 area.startRow == Tuple.first block
                                     && area.startCol == Tuple.second block
                             )
-                        |> Maybe.map getAreaCells
+                        |> Maybe.map .cells
                         |> Maybe.withDefault []
                         |> Set.fromList
                         |> Set.union visibleCells
@@ -5935,11 +5971,11 @@ buildPuzzleAreasForBoard blockSize startRow startCol =
             (\r ->
                 List.map
                     (\c ->
-                        { startRow = startRow + r * blockRows
-                        , startCol = startCol + c * blockCols
-                        , endRow = startRow + (r + 1) * blockRows - 1
-                        , endCol = startCol + (c + 1) * blockCols - 1
-                        }
+                        buildArea
+                            (startRow + r * blockRows)
+                            (startCol + c * blockCols)
+                            (startRow + (r + 1) * blockRows - 1)
+                            (startCol + (c + 1) * blockCols - 1)
                     )
                     (List.range 0 (blockSize // blockRows - 1))
             )
@@ -5947,29 +5983,29 @@ buildPuzzleAreasForBoard blockSize startRow startCol =
     , rows =
         List.map
             (\r ->
-                { startRow = startRow + r
-                , startCol = startCol
-                , endRow = startRow + r
-                , endCol = startCol + blockSize - 1
-                }
+                buildArea
+                    (startRow + r)
+                    startCol
+                    (startRow + r)
+                    (startCol + blockSize - 1)
             )
             (List.range 0 (blockSize - 1))
     , cols =
         List.map
             (\c ->
-                { startRow = startRow
-                , startCol = startCol + c
-                , endRow = startRow + blockSize - 1
-                , endCol = startCol + c
-                }
+                buildArea
+                    startRow
+                    (startCol + c)
+                    (startRow + blockSize - 1)
+                    (startCol + c)
             )
             (List.range 0 (blockSize - 1))
     , boards =
-        [ { startRow = startRow
-          , startCol = startCol
-          , endRow = startRow + blockSize - 1
-          , endCol = startCol + blockSize - 1
-          }
+        [ buildArea
+            startRow
+            startCol
+            (startRow + blockSize - 1)
+            (startCol + blockSize - 1)
         ]
     }
 
@@ -7074,7 +7110,7 @@ viewMenuOptionsStats model =
 
         cells : Int
         cells =
-            List.concatMap getAreaCells puzzleAreas.boards
+            List.concatMap .cells puzzleAreas.boards
                 |> Set.fromList
                 |> Set.size
 
@@ -8274,7 +8310,7 @@ viewReward model id area =
                         , HA.disabled
                             (List.any
                                 (not << cellIsVisible model)
-                                (getAreaCells area)
+                                area.cells
                             )
                         ]
                         [ Html.text "Scout" ]
