@@ -27,6 +27,7 @@ import Random
 import Random.List
 import Set exposing (Set)
 import Set.Extra
+import String.Extra
 import Task
 import Time
 import Yaml.Decode
@@ -92,6 +93,8 @@ type alias Model =
     , deathLinkEnabled : Bool
     , deathLinkInput : Bool
     , deathLinkTriggers : Int
+    , disabledLocations : Set String
+    , disabledLocationsChecked : Set String
     , discoTrapMap : Dict Int Int
     , discoTrapOffset : Int
     , discoTrapRatio : Int
@@ -204,6 +207,7 @@ type Msg
     | DeathLinkTriggered Decode.Value
     | DeletePressed
     | DifficultyChanged Int
+    | DisabledLocationChanged String Bool
     | DiscoTrapRatioChanged Int
     | DiscoTrapRatioInputBlurred
     | DiscoTrapRatioInputChanged String
@@ -347,6 +351,8 @@ init flagsValue =
       , deathLinkEnabled = False
       , deathLinkInput = False
       , deathLinkTriggers = 0
+      , disabledLocations = Set.empty
+      , disabledLocationsChecked = Set.empty
       , discoTrapMap = Dict.empty
       , discoTrapOffset = 0
       , discoTrapRatio = 20
@@ -678,6 +684,18 @@ update msg model =
             , Cmd.none
             )
 
+        DisabledLocationChanged locationType checked ->
+            ( { model
+                | disabledLocationsChecked =
+                    if checked then
+                        Set.insert locationType model.disabledLocationsChecked
+
+                    else
+                        Set.remove locationType model.disabledLocationsChecked
+              }
+            , Cmd.none
+            )
+
         DiscoTrapRatioChanged value ->
             ( { model
                 | discoTrapRatio = value
@@ -991,6 +1009,12 @@ update msg model =
 
                             else
                                 model.blockBundles
+                        , disabledLocations =
+                            if model.gameIsLocal then
+                                board.disabledLocations
+
+                            else
+                                model.disabledLocations
                       }
                     , if not model.gameIsLocal && model.gameState == Generating then
                         sendPlayingStatus ()
@@ -1147,6 +1171,7 @@ update msg model =
                         , bundleSize = slotData.bundleSize
                         , bundleBlocks = slotData.bundleBlocks
                         , blockBundles = buildBlockBundles slotData.bundleBlocks
+                        , disabledLocations = slotData.disabledLocations
                       }
                     , Cmd.none
                     )
@@ -1301,6 +1326,7 @@ update msg model =
                     , boardsPerCluster = model.boardsPerCluster
                     , bundleSize = model.bundleSize
                     , difficulty = model.difficulty
+                    , disabledLocations = Set.toList model.disabledLocationsChecked
                     , discoTrapRatio = model.discoTrapRatio
                     , duplicateProgression = model.duplicateProgression
                     , emojiTrapRatio = model.emojiTrapRatio
@@ -2158,6 +2184,7 @@ type alias GeneratedBoard =
     { blockSize : Int
     , blockUnlockOrder : List ( Int, Int )
     , bundles : Dict Int (List ( Int, Int ))
+    , disabledLocations : Set String
     , givens : Dict ( Int, Int ) Int
     , puzzleAreas : PuzzleAreas
     , solution : Dict ( Int, Int ) Int
@@ -2187,6 +2214,7 @@ type alias GenerateArgs =
     , boardsPerCluster : Int
     , bundleSize : Int
     , difficulty : Int
+    , disabledLocations : List String
     , discoTrapRatio : Int
     , duplicateProgression : Int
     , emojiTrapRatio : Int
@@ -2328,6 +2356,7 @@ type alias SlotData =
     { bundleBlocks : Dict Int (List ( Int, Int ))
     , bundleSize : Int
     , deathLink : Bool
+    , disabledLocations : Set String
     , locationScouting : LocationScouting
     , progression : Progression
     , seed : Int
@@ -2367,6 +2396,7 @@ type alias SavedGame =
     , bundleSize : Int
     , coordinates : List Int
     , current : List Int
+    , disabledLocations : Set String
     , discoTrapTriggers : Int
     , emojiTrapTriggers : Int
     , gameIsLocal : Bool
@@ -2399,6 +2429,7 @@ type alias YamlOptions =
     , progression : Maybe Progression
     , duplicateProgression : Maybe Int
     , bundleSize : Maybe Int
+    , disabledLocations : Maybe (Set String)
     , locationScouting : Maybe LocationScouting
     , solveSelectedCellRatio : Maybe Int
     , solveRandomCellRatio : Maybe Int
@@ -2542,10 +2573,11 @@ connectionHistoryDecoder =
 
 generatedBoardDecoder : Decode.Decoder GeneratedBoard
 generatedBoardDecoder =
-    Decode.map7 GeneratedBoard
+    Decode.map8 GeneratedBoard
         (Decode.field "blockSize" Decode.int)
         (Decode.field "blockUnlockOrder" (Decode.list blockUnlockOrderDecoder))
         (Decode.field "bundles" bundlesDecoder)
+        (Decode.field "disabledLocations" (Decode.list Decode.string |> Decode.map Set.fromList))
         (Decode.field "givens" (cellsDictDecoder Decode.int))
         (Decode.field "puzzleAreas" puzzleAreasDecoder)
         (Decode.field "solution" (cellsDictDecoder Decode.int))
@@ -2709,6 +2741,7 @@ encodeGenerateArgs args =
         , ( "boardsPerCluster", Encode.int args.boardsPerCluster )
         , ( "bundleSize", Encode.int args.bundleSize )
         , ( "difficulty", Encode.int args.difficulty )
+        , ( "disabledLocations", Encode.list Encode.string args.disabledLocations )
         , ( "discoTrapRatio", Encode.int args.discoTrapRatio )
         , ( "duplicateProgression", Encode.int args.duplicateProgression )
         , ( "emojiTrapRatio", Encode.int args.emojiTrapRatio )
@@ -2914,10 +2947,12 @@ slotDataDecoder =
     Field.require "seed" Decode.int <| \seed ->
     Field.optional "bundleSize" Decode.int <| \bundleSize ->
     Field.optional "bundles" bundlesDecoder <| \bundles ->
+    Field.optional "disabledLocations" (Decode.list Decode.string) <| \disabledLocations ->
     Decode.succeed
         { bundleBlocks = Maybe.withDefault Dict.empty bundles
         , bundleSize = Maybe.withDefault 1 bundleSize
         , deathLink = Maybe.withDefault 0 deathLink == 1
+        , disabledLocations = Set.fromList (Maybe.withDefault [] disabledLocations)
         , locationScouting = Maybe.withDefault ScoutingManual locationScouting
         , progression = Maybe.withDefault Shuffled progression
         , seed = seed
@@ -2997,6 +3032,7 @@ buildOptionsYaml model =
                     , ( "progression", yamlRecordValue <| progressionToString model.progression )
                     , ( "bundle_size", yamlRecordValue <| String.fromInt model.bundleSize )
                     , ( "duplicate_progression", yamlRecordValue <| String.fromInt model.duplicateProgression )
+                    , ( "disabled_locations", Yaml.Encode.list Yaml.Encode.string (Set.toList model.disabledLocationsChecked) )
                     , ( "location_scouting", yamlRecordValue <| locationScoutingToString model.locationScouting )
                     , ( "solve_selected_cell_ratio", yamlRecordValue <| String.fromInt model.solveSelectedCellRatio )
                     , ( "solve_random_cell_ratio", yamlRecordValue <| String.fromInt model.solveRandomCellRatio )
@@ -3213,6 +3249,7 @@ decodeOptionsYaml =
         |> Yaml.Decode.andMap (apdkField "progression" yamlProgressionDecoder)
         |> Yaml.Decode.andMap (apdkField "duplicate_progression" decodeYamlOptionInt)
         |> Yaml.Decode.andMap (apdkField "bundle_size" decodeYamlOptionInt)
+        |> Yaml.Decode.andMap (apdkField "disabled_locations" (Yaml.Decode.list Yaml.Decode.string |> Yaml.Decode.map Set.fromList))
         |> Yaml.Decode.andMap (apdkField "location_scouting" yamlLocationScoutingDecoder)
         |> Yaml.Decode.andMap (apdkField "solve_selected_cell_ratio" decodeYamlOptionInt)
         |> Yaml.Decode.andMap (apdkField "solve_random_cell_ratio" decodeYamlOptionInt)
@@ -3566,6 +3603,7 @@ encodeSavedGame timestamp model =
         , ( "bundleSize", Encode.int model.bundleSize )
         , ( "coordinates", Encode.list Encode.int cells.coordinates )
         , ( "current", Encode.list Encode.int cells.current )
+        , ( "disabledLocations", Encode.set Encode.string model.disabledLocations )
         , ( "discoTrapTriggers", Encode.int model.discoTrapTriggers )
         , ( "emojiTrapTriggers", Encode.int model.emojiTrapTriggers )
         , ( "gameIsLocal", Encode.bool model.gameIsLocal )
@@ -3596,6 +3634,7 @@ savedGameDecoder =
     Field.optional "bundleSize" Decode.int <| \bundleSize ->
     Field.require "coordinates" (Decode.list Decode.int) <| \coordinates ->
     Field.require "current" (Decode.list Decode.int) <| \current ->
+    Field.optional "disabledLocations" (Decode.list Decode.string) <| \disabledLocations ->
     Field.require "discoTrapTriggers" Decode.int <| \discoTrapTriggers ->
     Field.require "emojiTrapTriggers" Decode.int <| \emojiTrapTriggers ->
     Field.require "gameIsLocal" Decode.bool <| \gameIsLocal ->
@@ -3622,6 +3661,7 @@ savedGameDecoder =
         , bundleSize = Maybe.withDefault 1 bundleSize
         , coordinates = coordinates
         , current = current
+        , disabledLocations = Set.fromList (Maybe.withDefault [] disabledLocations)
         , discoTrapTriggers = discoTrapTriggers
         , emojiTrapTriggers = emojiTrapTriggers
         , gameIsLocal = gameIsLocal
@@ -4369,8 +4409,12 @@ updateStateCellChange updatedCell initialModel =
                     , Cmd.none
                     )
             )
-            (Dict.get updatedCell initialModel.cellBlocks
-                |> Maybe.withDefault []
+            (if Set.member "blocks" initialModel.disabledLocations then
+                []
+
+             else
+                Dict.get updatedCell initialModel.cellBlocks
+                    |> Maybe.withDefault []
             )
         |> applyList
             (\row model ->
@@ -4401,8 +4445,12 @@ updateStateCellChange updatedCell initialModel =
                     , Cmd.none
                     )
             )
-            (Dict.get updatedCell initialModel.cellRows
-                |> Maybe.withDefault []
+            (if Set.member "rows" initialModel.disabledLocations then
+                []
+
+             else
+                Dict.get updatedCell initialModel.cellRows
+                    |> Maybe.withDefault []
             )
         |> applyList
             (\col model ->
@@ -4433,8 +4481,12 @@ updateStateCellChange updatedCell initialModel =
                     , Cmd.none
                     )
             )
-            (Dict.get updatedCell initialModel.cellCols
-                |> Maybe.withDefault []
+            (if Set.member "columns" initialModel.disabledLocations then
+                []
+
+             else
+                Dict.get updatedCell initialModel.cellCols
+                    |> Maybe.withDefault []
             )
         |> applyList
             (\board model ->
@@ -4465,8 +4517,12 @@ updateStateCellChange updatedCell initialModel =
                     , Cmd.none
                     )
             )
-            (Dict.get updatedCell initialModel.cellBoards
-                |> Maybe.withDefault []
+            (if Set.member "boards" initialModel.disabledLocations then
+                []
+
+             else
+                Dict.get updatedCell initialModel.cellBoards
+                    |> Maybe.withDefault []
             )
 
 
@@ -5154,6 +5210,58 @@ blockBundleBaseId =
 maxBundles : Int
 maxBundles =
     450
+
+
+locationReenableOrder : List String
+locationReenableOrder =
+    [ "boards", "blocks", "columns", "rows" ]
+
+
+progressionDensityCap : Progression -> Float
+progressionDensityCap progression =
+    case progression of
+        Fixed ->
+            0.8
+
+        Shuffled ->
+            0.6
+
+
+resolveDisabledLocations : Set String -> Dict String Int -> Int -> Float -> Set String
+resolveDisabledLocations requested locationCounts progressionItemCount cap =
+    let
+        enabledLocations : Set String -> Int
+        enabledLocations effective =
+            Dict.foldl
+                (\typ count sum ->
+                    if Set.member typ effective then
+                        sum
+
+                    else
+                        sum + count
+                )
+                0
+                locationCounts
+
+        -- A board is the highest-sphere location (the whole board must be solved to check it), so
+        -- boards alone are terrible progression seeds. Require at least one non-board type enabled.
+        hasSeedType : Set String -> Bool
+        hasSeedType effective =
+            Dict.keys locationCounts
+                |> List.any (\typ -> typ /= "boards" && not (Set.member typ effective))
+
+        step : String -> Set String -> Set String
+        step typ effective =
+            if hasSeedType effective && toFloat progressionItemCount <= cap * toFloat (enabledLocations effective) then
+                effective
+
+            else
+                Set.remove typ effective
+    in
+    List.foldl
+        step
+        (Set.intersect requested (Set.fromList (Dict.keys locationCounts)))
+        locationReenableOrder
 
 
 cellToBlockId : ( Int, Int ) -> Int
@@ -5850,6 +5958,7 @@ loadSavedGame save model =
         , cellBoards = buildCellAreasMap save.puzzleAreas.boards
         , cellCols = buildCellAreasMap save.puzzleAreas.cols
         , cellRows = buildCellAreasMap save.puzzleAreas.rows
+        , disabledLocations = save.disabledLocations
         , blockSize = save.blockSize
         , bundleSize = save.bundleSize
         , bundleBlocks = save.bundleBlocks
@@ -6352,6 +6461,7 @@ applyYamlOptions opts model =
         , duplicateProgression = setIntField .duplicateProgression .duplicateProgression
         , duplicateProgressionInput = setIntAsStringField .duplicateProgression .duplicateProgressionInput
         , bundleSize = setIntField .bundleSize .bundleSize
+        , disabledLocationsChecked = Maybe.withDefault model.disabledLocationsChecked opts.disabledLocations
         , bundleSizeInput = setIntAsStringField .bundleSize .bundleSizeInput
         , locationScouting = opts.locationScouting |> Maybe.withDefault model.locationScouting
         , solveSelectedCellRatio = setIntField .solveSelectedCellRatio .solveSelectedCellRatio
@@ -6958,6 +7068,46 @@ viewMenuOptionsBoard model =
                     , HA.style "align-items" "center"
                     , HA.style "justify-content" "space-between"
                     ]
+                    [ Html.text "Disabled Locations:"
+                    , viewOptionHint
+                        "disabled-locations-hint"
+                        (String.join
+                            "\n"
+                            [ "Location types to remove entirely, reducing the number of locations and filler items."
+                            , "If disabling the selected types would leave too few locations for the progression items, some are automatically re-enabled."
+                            , "Higher bundle sizes allow disabling more, since they reduce the number of progression items."
+                            ]
+                        )
+                    ]
+                , Html.div
+                    [ HA.class "row gap-m wrap"
+                    ]
+                    (List.map
+                        (\locationType ->
+                            Html.label
+                                [ HA.class "row gap-s"
+                                , HA.style "align-items" "center"
+                                ]
+                                [ Html.input
+                                    [ HA.type_ "checkbox"
+                                    , HA.checked (Set.member locationType model.disabledLocationsChecked)
+                                    , HE.onCheck (DisabledLocationChanged locationType)
+                                    ]
+                                    []
+                                , Html.text (String.Extra.toSentenceCase locationType)
+                                ]
+                        )
+                        [ "boards", "blocks", "rows", "columns" ]
+                    )
+                ]
+            , Html.div
+                [ HA.class "column gap-s"
+                ]
+                [ Html.div
+                    [ HA.class "row gap-m"
+                    , HA.style "align-items" "center"
+                    , HA.style "justify-content" "space-between"
+                    ]
                     [ Html.text "Location Scouting:"
                     , viewOptionHint
                         "location-scouting-hint"
@@ -7306,20 +7456,20 @@ viewMenuOptionsStats model =
                     )
                 |> joinPuzzleAreas
 
-        locations : Int
-        locations =
-            List.sum
-                [ List.length puzzleAreas.rows
-                , List.length puzzleAreas.cols
-                , List.length puzzleAreas.blocks
-                , List.length puzzleAreas.boards
-                ]
-
         cells : Int
         cells =
             List.concatMap .cells puzzleAreas.boards
                 |> Set.fromList
                 |> Set.size
+
+        locationCounts : Dict String Int
+        locationCounts =
+            Dict.fromList
+                [ ( "blocks", List.length puzzleAreas.blocks )
+                , ( "boards", List.length puzzleAreas.boards )
+                , ( "rows", List.length puzzleAreas.rows )
+                , ( "columns", List.length puzzleAreas.cols )
+                ]
 
         progressionBlocks : Int
         progressionBlocks =
@@ -7342,6 +7492,38 @@ viewMenuOptionsStats model =
             (toFloat model.duplicateProgression) / 100 + 1
                 |> (*) (toFloat rawProgressionItems)
                 |> floor
+
+        effectiveDisabledLocations : Set String
+        effectiveDisabledLocations =
+            resolveDisabledLocations
+                model.disabledLocationsChecked
+                locationCounts
+                progressionItems
+                (progressionDensityCap model.progression)
+
+        locations : Int
+        locations =
+            Dict.foldl
+                (\typ count sum ->
+                    if Set.member typ effectiveDisabledLocations then
+                        sum
+
+                    else
+                        sum + count
+                )
+                0
+                locationCounts
+
+        reEnabledLocations : Set String
+        reEnabledLocations =
+            Set.diff model.disabledLocationsChecked effectiveDisabledLocations
+
+        formatLocationTypes : Set String -> String
+        formatLocationTypes types =
+            types
+                |> Set.toList
+                |> List.map String.Extra.toSentenceCase
+                |> String.join ", "
 
         fillerItems : Int
         fillerItems =
@@ -7381,9 +7563,23 @@ viewMenuOptionsStats model =
             , textDiv "Locations: "
             , textDiv (String.fromInt locations)
 
+            , Html.Extra.viewIf
+                (not (Set.isEmpty effectiveDisabledLocations))
+                (textDiv "Disabled Locations: ")
+            , Html.Extra.viewIf
+                (not (Set.isEmpty effectiveDisabledLocations))
+                (textDiv (formatLocationTypes effectiveDisabledLocations))
+
+            , Html.Extra.viewIf
+                (not (Set.isEmpty reEnabledLocations))
+                (textDiv "- Auto Re-enabled: ")
+            , Html.Extra.viewIf
+                (not (Set.isEmpty reEnabledLocations))
+                (textDiv (formatLocationTypes reEnabledLocations))
+
             , textDiv "Progression Items: "
             , textDiv
-                (String.concat
+               (String.concat
                     [ String.fromInt progressionItems
                     , " ("
                     , String.fromInt
@@ -7820,33 +8016,49 @@ viewInfoPanelSelected model =
             ]
             (List.concat
                 [ [ viewCellInfo model model.selectedCell ]
-                , List.map
-                    (viewBlockInfo model)
-                    (Dict.get model.selectedCell model.cellBlocks
-                        |> Maybe.withDefault []
-                        |> List.sortBy .startRow
-                    )
+                , if Set.member "blocks" model.disabledLocations then
+                    []
 
-                , List.map
-                    (viewRowInfo model)
-                    (Dict.get model.selectedCell model.cellRows
-                        |> Maybe.withDefault []
-                        |> List.sortBy .startCol
-                    )
+                  else
+                    List.map
+                        (viewBlockInfo model)
+                        (Dict.get model.selectedCell model.cellBlocks
+                            |> Maybe.withDefault []
+                            |> List.sortBy .startRow
+                        )
 
-                , List.map
-                    (viewColInfo model)
-                    (Dict.get model.selectedCell model.cellCols
-                        |> Maybe.withDefault []
-                        |> List.sortBy .startRow
-                    )
+                , if Set.member "rows" model.disabledLocations then
+                    []
 
-                , List.map
-                    (viewBoardInfo model)
-                    (Dict.get model.selectedCell model.cellBoards
-                        |> Maybe.withDefault []
-                        |> List.sortBy .startRow
-                    )
+                  else
+                    List.map
+                        (viewRowInfo model)
+                        (Dict.get model.selectedCell model.cellRows
+                            |> Maybe.withDefault []
+                            |> List.sortBy .startCol
+                        )
+
+                , if Set.member "columns" model.disabledLocations then
+                    []
+
+                  else
+                    List.map
+                        (viewColInfo model)
+                        (Dict.get model.selectedCell model.cellCols
+                            |> Maybe.withDefault []
+                            |> List.sortBy .startRow
+                        )
+
+                , if Set.member "boards" model.disabledLocations then
+                    []
+
+                  else
+                    List.map
+                        (viewBoardInfo model)
+                        (Dict.get model.selectedCell model.cellBoards
+                            |> Maybe.withDefault []
+                            |> List.sortBy .startRow
+                        )
                 , if model.gameIsLocal then
                     []
 

@@ -1,3 +1,4 @@
+import logging
 import math
 from typing import Any
 
@@ -41,6 +42,7 @@ class ArchipeladokuWorld(World):
         self.block_to_bundle = {}
         self.bundle_count = 0
         self.uses_bundle_items = False
+        self.disabled_locations = set()
         self.pre_fill_items = []
         self.item_name_groups = self.__class__.item_name_groups.copy()
         self.location_name_groups = self.__class__.location_name_groups.copy()
@@ -80,6 +82,7 @@ class ArchipeladokuWorld(World):
             self.duplicate_progression_count = slot_data["duplicateProgressionCount"]
             self.filler_counts = slot_data["fillerCounts"]
             self.bundle_size = slot_data["bundleSize"]
+            self.disabled_locations = set(slot_data["disabledLocations"])
 
         else:
             board_positions = utils.position_boards(
@@ -122,12 +125,36 @@ class ArchipeladokuWorld(World):
             progression_items = len(self.block_unlock_order) - initial_unlock_count
             self.bundle_size = min(self.options.bundle_size.value, self.options.block_size.value)
             bundle_count = math.ceil(progression_items / self.bundle_size) if progression_items > 0 else 0
-            freed = progression_items - bundle_count
             self.duplicate_progression_count = bundle_count * self.options.duplicate_progression.value // 100
+
+            progression_item_count = bundle_count + self.duplicate_progression_count
+            location_counts = utils.get_location_counts(
+                self.options.block_size.value,
+                self.options.number_of_boards.value,
+                len(self.block_unlock_order),
+            )
+            cap = utils.progression_density_caps.get(self.options.progression.value, 1.0)
+            self.disabled_locations, reenabled = utils.resolve_disabled_locations(
+                set(self.options.disabled_locations.value),
+                location_counts,
+                progression_item_count,
+                cap,
+            )
+            if reenabled:
+                logging.warning(
+                    "Archipeladoku (%s): re-enabled location type(s) %s to keep enough locations "
+                    "for progression items.",
+                    self.multiworld.get_player_name(self.player),
+                    ", ".join(sorted(reenabled)),
+                )
+
+            enabled_locations = sum(
+                count for typ, count in location_counts.items()
+                if typ not in self.disabled_locations
+            )
             self.filler_counts = utils.get_filler_counts(
                 self.options,
-                self.duplicate_progression_count,
-                freed,
+                enabled_locations - progression_item_count,
             )
 
         initial_unlock_count = self.options.block_size.value
@@ -160,15 +187,20 @@ class ArchipeladokuWorld(World):
                 raise ValueError("Invalid progression option")
 
         for cluster in self.clusters.values():
-            for (row, col) in cluster.blocks:
-                self.location_name_groups["Blocks"].add(utils.block_name(row, col))
+            if "blocks" not in self.disabled_locations:
+                for (row, col) in cluster.blocks:
+                    self.location_name_groups["Blocks"].add(utils.block_name(row, col))
 
             for (row, col) in cluster.positions:
-                self.location_name_groups["Boards"].add(utils.board_name(row, col))
+                if "boards" not in self.disabled_locations:
+                    self.location_name_groups["Boards"].add(utils.board_name(row, col))
 
                 for offset in range(self.options.block_size.value):
-                    self.location_name_groups["Rows"].add(utils.row_name(row + offset, col))
-                    self.location_name_groups["Columns"].add(utils.col_name(row, col + offset))
+                    if "rows" not in self.disabled_locations:
+                        self.location_name_groups["Rows"].add(utils.row_name(row + offset, col))
+
+                    if "columns" not in self.disabled_locations:
+                        self.location_name_groups["Columns"].add(utils.col_name(row, col + offset))
 
         unused_blocks = self.__class__.item_name_groups["Blocks"] - self.item_name_groups["Blocks"]
         if unused_blocks:
@@ -233,62 +265,65 @@ class ArchipeladokuWorld(World):
                 case _:
                     raise ValueError("Invalid progression option")
 
-            # Add board locations
+            # Add board, row and column locations
             for (row, col) in cluster.positions:
-                loc = ArchipeladokuLocation(
-                    self.player,
-                    utils.board_name(row, col),
-                    utils.board_id(row, col),
-                    region,
-                )
-                region.locations.append(loc)
+                if "boards" not in self.disabled_locations:
+                    loc = ArchipeladokuLocation(
+                        self.player,
+                        utils.board_name(row, col),
+                        utils.board_id(row, col),
+                        region,
+                    )
+                    region.locations.append(loc)
 
-                # Add row and column locations
                 for offset in range(self.options.block_size.value):
-                    loc = ArchipeladokuLocation(
-                        self.player,
-                        utils.row_name(row + offset, col),
-                        utils.row_id(row + offset, col),
-                        region,
-                    )
-                    region.locations.append(loc)
+                    if "rows" not in self.disabled_locations:
+                        loc = ArchipeladokuLocation(
+                            self.player,
+                            utils.row_name(row + offset, col),
+                            utils.row_id(row + offset, col),
+                            region,
+                        )
+                        region.locations.append(loc)
 
-                    loc = ArchipeladokuLocation(
-                        self.player,
-                        utils.col_name(row, col + offset),
-                        utils.col_id(row, col + offset),
-                        region,
-                    )
-                    region.locations.append(loc)
+                    if "columns" not in self.disabled_locations:
+                        loc = ArchipeladokuLocation(
+                            self.player,
+                            utils.col_name(row, col + offset),
+                            utils.col_id(row, col + offset),
+                            region,
+                        )
+                        region.locations.append(loc)
 
             # Add block locations
-            for (row, col) in cluster.blocks:
-                block_clusters = block_cluster_map[(row, col)]
-                if block_region_map.get((row, col)) is None:
-                    if len(block_clusters) > 1:
-                        block_region = Region(
-                            f"Block {row},{col} Overlap",
+            if "blocks" not in self.disabled_locations:
+                for (row, col) in cluster.blocks:
+                    block_clusters = block_cluster_map[(row, col)]
+                    if block_region_map.get((row, col)) is None:
+                        if len(block_clusters) > 1:
+                            block_region = Region(
+                                f"Block {row},{col} Overlap",
+                                self.player,
+                                self.multiworld,
+                            )
+                            self.multiworld.regions.append(block_region)
+                            connection = region.connect(block_region)
+                            block_region_map[(row, col)] = block_region
+
+                        else:
+                            block_region = region
+
+                        loc = ArchipeladokuLocation(
                             self.player,
-                            self.multiworld,
+                            utils.block_name(row, col),
+                            utils.block_id(row, col),
+                            block_region,
                         )
-                        self.multiworld.regions.append(block_region)
+                        block_region.locations.append(loc)
+
+                    elif len(block_clusters) > 1:
+                        block_region = block_region_map[(row, col)]
                         connection = region.connect(block_region)
-                        block_region_map[(row, col)] = block_region
-
-                    else:
-                        block_region = region
-
-                    loc = ArchipeladokuLocation(
-                        self.player,
-                        utils.block_name(row, col),
-                        utils.block_id(row, col),
-                        block_region,
-                    )
-                    block_region.locations.append(loc)
-
-                elif len(block_clusters) > 1:
-                    block_region = block_region_map[(row, col)]
-                    connection = region.connect(block_region)
 
         victory_location = ArchipeladokuLocation(
             self.player,
@@ -455,6 +490,7 @@ class ArchipeladokuWorld(World):
             "deathLink": self.options.death_link.value,
             "bundleSize": self.bundle_size,
             "bundles": self.bundles if self.uses_bundle_items else [],
+            "disabledLocations": sorted(self.disabled_locations),
         }
 
 

@@ -67,17 +67,68 @@ def get_total_filler_count(block_size: int, number_of_boards: int) -> int:
     ])
 
 
-def get_filler_counts(options, duplicate_progression_count: int, extra_fillers: int = 0) -> dict[str, int]:
-    """Calculate the count per filler item.
+disableable_location_types = ["blocks", "rows", "columns", "boards"]
 
-    extra_fillers is the number of progression slots freed up by bundling (each bundle replaces
-    several individual progression items), which must be filled with filler to keep the item and
-    location counts balanced.
+location_reenable_order = ["boards", "blocks", "columns", "rows"]
+
+progression_density_caps = {
+    "fixed": 0.8,
+    "shuffled": 0.6,
+}
+
+
+def get_location_counts(block_size: int, number_of_boards: int, total_blocks: int) -> dict[str, int]:
+    """Number of locations of each disableable type."""
+
+    boards = get_number_of_boards(block_size, number_of_boards)
+
+    return {
+        "blocks": total_blocks,
+        "boards": boards,
+        "rows": boards * block_size,
+        "columns": boards * block_size,
+    }
+
+
+def resolve_disabled_locations(
+    requested_disabled: set[str],
+    location_counts: dict[str, int],
+    progression_item_count: int,
+    cap: float,
+) -> tuple[set[str], list[str]]:
+    """Return the effective disabled-location set and the types that had to be re-enabled.
+
+    Re-enables disabled location types (in location_reenable_order) until the progression items fit
+    within the enabled locations at the given density cap, or until nothing is left to re-enable.
+
+    At least one non-board location type must stay enabled: a board is the highest-sphere location
+    (the whole board must be solved to check it), so boards alone are terrible progression seeds.
     """
 
-    total_fillers = get_total_filler_count(options.block_size.value, options.number_of_boards.value)
-    total_fillers += extra_fillers
-    total_fillers -= duplicate_progression_count
+    effective = set(requested_disabled) & set(location_counts)
+    reenabled = []
+
+    def enabled_locations() -> int:
+        return sum(count for typ, count in location_counts.items() if typ not in effective)
+
+    def has_seed_type() -> bool:
+        return any(typ != "boards" and typ not in effective for typ in location_counts)
+
+    for typ in location_reenable_order:
+        if has_seed_type() and progression_item_count <= cap * enabled_locations():
+            break
+
+        if typ in effective:
+            effective.discard(typ)
+            reenabled.append(typ)
+
+    return effective, reenabled
+
+
+def get_filler_counts(options, total_fillers: int) -> dict[str, int]:
+    """Distribute total_fillers filler items across the filler types by their ratios."""
+
+    total_fillers = max(0, total_fillers)
 
     ratios = {
         "Solve Random Cell": options.solve_random_cell_ratio.value,

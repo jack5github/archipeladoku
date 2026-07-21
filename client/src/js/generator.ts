@@ -37,6 +37,7 @@ interface GenerateLocalArgs {
     boardsPerCluster?: number
     bundleSize: number
     difficulty: number
+    disabledLocations: string[]
     discoTrapRatio: number
     duplicateProgression: number
     emojiTrapRatio: number
@@ -114,6 +115,7 @@ interface Completed {
     blockSize: number
     blockUnlockOrder: number[]
     bundles: Cell[][]
+    disabledLocations: string[]
     givens: EncodedCellValue[]
     solution: EncodedCellValue[]
     puzzleAreas: EncodedPuzzleAreas
@@ -148,6 +150,7 @@ interface ClusterGenerationState {
     blockSize: number
     blockUnlockOrder: number[]
     bundles: Cell[][]
+    disabledLocations: string[]
     cellBlockIndicesMap: CellIndex[][][]
     cellColIndicesMap: CellIndex[][][]
     cellRowIndicesMap: CellIndex[][][]
@@ -245,8 +248,8 @@ export function initGeneration(args: GenerateArgs): BoardGenerationState {
     const clusters: Cell[][] = "clusters" in args
         ? args.clusters
         : buildClusters(positions, rng)
-    const [ blockUnlockOrder, unlockMap, bundles ]: [number[], Map<number, number>, Cell[][]] = "blockUnlockOrder" in args
-        ? [args.blockUnlockOrder, new Map(), []]
+    const [ blockUnlockOrder, unlockMap, bundles, disabledLocations ]: [number[], Map<number, number>, Cell[][], string[]] = "blockUnlockOrder" in args
+        ? [args.blockUnlockOrder, new Map(), [], []]
         : buildUnlocks(
             args,
             puzzleAreas.blocks,
@@ -264,6 +267,7 @@ export function initGeneration(args: GenerateArgs): BoardGenerationState {
             unlockMap: unlockMap,
             blockUnlockOrder: blockUnlockOrder,
             bundles: bundles,
+            disabledLocations: disabledLocations,
             cellBlockIndicesMap: cellBlockIndicesMap,
             cellColIndicesMap: cellColIndicesMap,
             cellRowIndicesMap: cellRowIndicesMap,
@@ -566,18 +570,75 @@ function buildClusters(positions: Cell[], rng: () => number): Cell[][] {
 }
 
 
+const locationReenableOrder = ['boards', 'blocks', 'columns', 'rows']
+
+const progressionDensityCaps: Record<string, number> = {
+    fixed: 0.8,
+    shuffled: 0.6,
+}
+
+
+function resolveDisabledLocations(
+    requested: Set<string>,
+    locationCounts: Record<string, number>,
+    progressionItemCount: number,
+    cap: number,
+): Set<string> {
+    const effective = new Set([...requested].filter(type => type in locationCounts))
+
+    const enabledLocations = () =>
+        Object.entries(locationCounts).reduce(
+            (sum, [type, count]) => effective.has(type) ? sum : sum + count,
+            0,
+        )
+
+    // A board is the highest-sphere location (the whole board must be solved to check it), so
+    // boards alone are terrible progression seeds. Require at least one non-board type enabled.
+    const hasSeedType = () =>
+        Object.keys(locationCounts).some(type => type !== 'boards' && !effective.has(type))
+
+    for (const type of locationReenableOrder) {
+        if (hasSeedType() && progressionItemCount <= cap * enabledLocations()) {
+            break
+        }
+        effective.delete(type)
+    }
+
+    return effective
+}
+
+
 function buildUnlocks(
     args: GenerateLocalArgs,
     allBlocks: Area[],
     clusters: Cell[][],
     rng: () => number,
-): [number[], Map<number, number>, Cell[][]] {
+): [number[], Map<number, number>, Cell[][], string[]] {
     const unlockMap: Map<number, number> = new Map()
     const remainingBlocks: Map<number, Cell> = new Map()
     const duplicateBlocks: Cell[] = []
     const solvableLocations: Map<number, UnlockLocation> = new Map()
     const lockedClusters: Map<number, UnlockMapCluster> = new Map()
     const clusterOrder: UnlockMapCluster[] = []
+
+    const totalBlocks = allBlocks.length
+    const boards = clusters.reduce((sum, cluster) => sum + cluster.length, 0)
+    const bundleSize = Math.max(1, Math.min(args.bundleSize, args.blockSize))
+    const progressionBlocks = totalBlocks - args.blockSize
+    const numBundles = progressionBlocks > 0 ? Math.ceil(progressionBlocks / bundleSize) : 0
+    const duplicates = Math.floor(args.duplicateProgression * numBundles / 100)
+    const locationCounts: Record<string, number> = {
+        blocks: totalBlocks,
+        boards: boards,
+        rows: boards * args.blockSize,
+        columns: boards * args.blockSize,
+    }
+    const disabledLocations = resolveDisabledLocations(
+        new Set(args.disabledLocations),
+        locationCounts,
+        numBundles + duplicates,
+        progressionDensityCaps[args.progression] ?? 1.0,
+    )
 
     for (const block of allBlocks) {
         const key = getCellIndex(block.startRow, block.startCol)
@@ -600,22 +661,30 @@ function buildUnlocks(
             for (const block of boardAreas.blocks) {
                 const blockKey = getCellIndex(block.startRow, block.startCol)
                 unlockMapCluster.blocks.set(blockKey, [block.startRow, block.startCol])
-                const blockId = cellToBlockId(block.startRow, block.startCol)
-                unlockMapCluster.locations.set(blockId, { id: blockId, weight: 1 })
+                if (!disabledLocations.has('blocks')) {
+                    const blockId = cellToBlockId(block.startRow, block.startCol)
+                    unlockMapCluster.locations.set(blockId, { id: blockId, weight: 1 })
+                }
             }
 
-            for (const row of boardAreas.rows) {
-                const rowId = cellToRowId(row.startRow, row.startCol)
-                unlockMapCluster.locations.set(rowId, { id: rowId, weight: 1 })
+            if (!disabledLocations.has('rows')) {
+                for (const row of boardAreas.rows) {
+                    const rowId = cellToRowId(row.startRow, row.startCol)
+                    unlockMapCluster.locations.set(rowId, { id: rowId, weight: 1 })
+                }
             }
 
-            for (const col of boardAreas.cols) {
-                const colId = cellToColId(col.startRow, col.startCol)
-                unlockMapCluster.locations.set(colId, { id: colId, weight: 1 })
+            if (!disabledLocations.has('columns')) {
+                for (const col of boardAreas.cols) {
+                    const colId = cellToColId(col.startRow, col.startCol)
+                    unlockMapCluster.locations.set(colId, { id: colId, weight: 1 })
+                }
             }
 
-            const boardId = cellToBoardId(startRow, startCol)
-            unlockMapCluster.locations.set(boardId, { id: boardId, weight: 1 })
+            if (!disabledLocations.has('boards')) {
+                const boardId = cellToBoardId(startRow, startCol)
+                unlockMapCluster.locations.set(boardId, { id: boardId, weight: 1 })
+            }
 
             if (startRow === 1 && startCol === 1) {
                 lockedClusters.delete(i)
@@ -687,7 +756,6 @@ function buildUnlocks(
         blockUnlockOrder.push(...toAdd)
     }
 
-    const bundleSize = Math.max(1, Math.min(args.bundleSize, args.blockSize))
     const usesBundleItems = bundleSize > 1 && args.progression === 'shuffled'
     const bundles: Cell[][] = []
 
@@ -759,7 +827,7 @@ function buildUnlocks(
 
     addFillers(args, unlockMap, solvableLocations, rng)
 
-    return [ blockUnlockOrder, unlockMap, usesBundleItems ? bundles : [] ]
+    return [ blockUnlockOrder, unlockMap, usesBundleItems ? bundles : [], [...disabledLocations].sort() ]
 }
 
 
@@ -2516,6 +2584,7 @@ function clusterStateToCompleted(state: ClusterGenerationState): Completed {
         blockSize: state.blockSize,
         blockUnlockOrder: state.blockUnlockOrder,
         bundles: state.bundles,
+        disabledLocations: state.disabledLocations,
         givens: givens,
         puzzleAreas: encodedPuzzleAreas,
         solution: solution,

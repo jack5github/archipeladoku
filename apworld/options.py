@@ -95,6 +95,17 @@ class DuplicateProgression(Options.Range):
     default = 0
 
 
+class DisabledLocations(Options.OptionSet):
+    """Location types to remove entirely, reducing the number of locations and filler items. Valid
+    values: blocks, rows, columns, boards. If disabling the requested types would leave too few
+    locations for the progression items, some types are automatically re-enabled (a warning is
+    logged). Higher bundle sizes allow disabling more, since they reduce the number of progression
+    items.
+    """
+    display_name = "Disabled Locations"
+    valid_keys = {"blocks", "rows", "columns", "boards"}
+
+
 class LocationScouting(Options.Choice):
     """How scouting of locations is handled.
     - Auto: Locations are scouted automatically when fully revealed.
@@ -192,6 +203,7 @@ class ArchipeladokuOptions(Options.PerGameCommonOptions):
     progression: Progression
     bundle_size: BundleSize
     duplicate_progression: DuplicateProgression
+    disabled_locations: DisabledLocations
     location_scouting: LocationScouting
     solve_selected_cell_ratio: SolveSelectedCellRatio
     solve_random_cell_ratio: SolveRandomCellRatio
