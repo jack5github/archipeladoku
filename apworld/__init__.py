@@ -6,13 +6,19 @@ from . import options, utils
 from BaseClasses import CollectionState, Item, ItemClassification, Location, Region, MultiWorld
 from Options import OptionError
 from collections import defaultdict
-from worlds.AutoWorld import World
+from worlds.AutoWorld import World, WebWorld
 from .utils import Cluster
 import Fill
 
 
+class ArchipeladokuWeb(WebWorld):
+    option_groups = options.option_groups
+
+
 class ArchipeladokuWorld(World):
     game = "Archipeladoku"
+
+    web = ArchipeladokuWeb()
 
     options_dataclass = options.ArchipeladokuOptions
     options: options.ArchipeladokuOptions

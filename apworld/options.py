@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import Options
+from Options import OptionGroup
 
 
 class BlockSize(Options.Choice):
@@ -192,6 +193,36 @@ class DeathLink(Options.DeathLink):
     link is received all non-given numbers will be cleared. This can also be toggled in the client
     from the Debug menu.
     """
+
+
+option_groups = [
+    OptionGroup(
+        "Board Options",
+        [
+            BlockSize,
+            BoardsPerCluster,
+            NumberOfBoards,
+            Difficulty,
+            Progression,
+            BundleSize,
+            DuplicateProgression,
+            DisabledLocations,
+            LocationScouting,
+        ],
+    ),
+    OptionGroup(
+        "Filler Options",
+        [
+            SolveSelectedCellRatio,
+            SolveRandomCellRatio,
+            RemoveRandomCandidateRatio,
+            DiscoTrapRatio,
+            EmojiTrapRatio,
+            TunnelVisionTrapRatio,
+            PreFillNothingsPercent,
+        ],
+    ),
+]
 
 
 @dataclass
