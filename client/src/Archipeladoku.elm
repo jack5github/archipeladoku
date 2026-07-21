@@ -7546,6 +7546,15 @@ viewMenuOptionsStats model =
             Html.div
                 []
                 [ Html.text text ]
+
+        countWithPercent : Int -> Int -> String
+        countWithPercent count total =
+            String.concat
+                [ String.fromInt count
+                , " ("
+                , String.fromInt (round (toFloat count / toFloat total * 100))
+                , "%)"
+                ]
     in
     Html.div
         [ HA.class "option-statistics"
@@ -7578,46 +7587,20 @@ viewMenuOptionsStats model =
                 (textDiv (formatLocationTypes reEnabledLocations))
 
             , textDiv "Progression Items: "
-            , textDiv
-               (String.concat
-                    [ String.fromInt progressionItems
-                    , " ("
-                    , String.fromInt
-                        (round
-                            ((toFloat progressionItems / toFloat locations) * 100)
-                        )
-                    , "%)"
-                    ]
-                )
-
+            , textDiv ""
+            , textDiv "- Excl. pre-filled: "
+            , textDiv (countWithPercent progressionItems (locations - preFilledNothings))
+            , textDiv "- Incl. pre-filled: "
+            , textDiv (countWithPercent progressionItems locations)
             , textDiv "- Duplicates: "
             , textDiv <| String.fromInt <| progressionItems - rawProgressionItems
 
             , textDiv "Filler Items: "
-            , textDiv
-                (String.concat
-                    [ String.fromInt fillerItems
-                    , " ("
-                    , String.fromInt
-                        (round
-                            ((toFloat fillerItems / toFloat locations) * 100)
-                        )
-                    , "%)"
-                    ]
-                )
-
-            , textDiv "- Excluding pre-filled: "
-            , textDiv
-                (String.concat
-                    [ String.fromInt <| fillerItems - preFilledNothings
-                    , " ("
-                    , String.fromInt
-                        (round
-                            ((toFloat (fillerItems - preFilledNothings) / toFloat locations) * 100)
-                        )
-                    , "%)"
-                    ]
-                )
+            , textDiv ""
+            , textDiv "- Excl. pre-filled: "
+            , textDiv (countWithPercent (fillerItems - preFilledNothings) (locations - preFilledNothings))
+            , textDiv "- Incl. pre-filled: "
+            , textDiv (countWithPercent fillerItems locations)
             ]
         , Html.div
             [ HA.class "option-statistics-grid"
@@ -7629,17 +7612,19 @@ viewMenuOptionsStats model =
                 ]
                 (List.concatMap
                     (\( item, count ) ->
-                        List.append
+                        if item == NothingItem then
+                            [ textDiv <| itemName item ++ ": "
+                            , textDiv ""
+                            , textDiv "- Excl. pre-filled: "
+                            , textDiv <| String.fromInt (count - preFilledNothings)
+                            , textDiv "- Incl. pre-filled: "
+                            , textDiv <| String.fromInt count
+                            ]
+
+                        else
                             [ textDiv <| itemName item ++ ": "
                             , textDiv <| String.fromInt count
                             ]
-                            (if item == NothingItem then
-                                [ textDiv "- Excluding pre-filled: "
-                                , textDiv <| String.fromInt (count - preFilledNothings)
-                                ]
-
-                            else
-                                [])
                     )
                     (Dict.toList fillerCounts
                         |> List.map (Tuple.mapFirst itemFromId)
