@@ -68,6 +68,20 @@ class Progression(Options.Choice):
     default = "shuffled"
 
 
+class BundleSize(Options.Range):
+    """How many blocks a single progression item unlocks at once.
+    - A value of 1 disables bundling.
+    - The value is clamped to the block size, so a bundle never unlocks more than a whole
+      board's worth of blocks.
+    - For Fixed progression each "Progressive Block" is worth this many unlocks.
+    - For Shuffled progression each bundle is a "Block Bundle" item unlocking this many blocks.
+    """
+    display_name = "Bundle Size"
+    range_start = 1
+    range_end = 16
+    default = 1
+
+
 class DuplicateProgression(Options.Range):
     """Percent of progression items that should be duplicated.
     - For Fixed progression higher values may lead to progression being too fast and as such a
@@ -176,6 +190,7 @@ class ArchipeladokuOptions(Options.PerGameCommonOptions):
     number_of_boards: NumberOfBoards
     difficulty: Difficulty
     progression: Progression
+    bundle_size: BundleSize
     duplicate_progression: DuplicateProgression
     location_scouting: LocationScouting
     solve_selected_cell_ratio: SolveSelectedCellRatio

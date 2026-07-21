@@ -35,6 +35,7 @@ type GenerateArgs = GenerateLocalArgs | GenerateServerArgs
 interface GenerateLocalArgs {
     blockSize: number
     boardsPerCluster?: number
+    bundleSize: number
     difficulty: number
     discoTrapRatio: number
     duplicateProgression: number
@@ -112,6 +113,7 @@ interface Completed {
     type: 'Completed'
     blockSize: number
     blockUnlockOrder: number[]
+    bundles: Cell[][]
     givens: EncodedCellValue[]
     solution: EncodedCellValue[]
     puzzleAreas: EncodedPuzzleAreas
@@ -145,6 +147,7 @@ interface ClusterGenerationState {
     allClusters: Cell[][]
     blockSize: number
     blockUnlockOrder: number[]
+    bundles: Cell[][]
     cellBlockIndicesMap: CellIndex[][][]
     cellColIndicesMap: CellIndex[][][]
     cellRowIndicesMap: CellIndex[][][]
@@ -185,6 +188,7 @@ const maxFirstClusterRetries = 10
 const solveRandomCellId = 1
 const removeRandomCandidateId = 2
 const progressiveBlockId = 101
+const blockBundleBaseId = 1000
 const solveSelectedCellId = 201
 const emojiTrapId = 401
 const discoTrapId = 402
@@ -241,8 +245,8 @@ export function initGeneration(args: GenerateArgs): BoardGenerationState {
     const clusters: Cell[][] = "clusters" in args
         ? args.clusters
         : buildClusters(positions, rng)
-    const [ blockUnlockOrder, unlockMap ]: [number[], Map<number, number>] = "blockUnlockOrder" in args
-        ? [args.blockUnlockOrder, new Map()]
+    const [ blockUnlockOrder, unlockMap, bundles ]: [number[], Map<number, number>, Cell[][]] = "blockUnlockOrder" in args
+        ? [args.blockUnlockOrder, new Map(), []]
         : buildUnlocks(
             args,
             puzzleAreas.blocks,
@@ -259,6 +263,7 @@ export function initGeneration(args: GenerateArgs): BoardGenerationState {
             blockSize: args.blockSize,
             unlockMap: unlockMap,
             blockUnlockOrder: blockUnlockOrder,
+            bundles: bundles,
             cellBlockIndicesMap: cellBlockIndicesMap,
             cellColIndicesMap: cellColIndicesMap,
             cellRowIndicesMap: cellRowIndicesMap,
@@ -566,7 +571,7 @@ function buildUnlocks(
     allBlocks: Area[],
     clusters: Cell[][],
     rng: () => number,
-): [number[], Map<number, number>] {
+): [number[], Map<number, number>, Cell[][]] {
     const unlockMap: Map<number, number> = new Map()
     const remainingBlocks: Map<number, Cell> = new Map()
     const duplicateBlocks: Cell[] = []
@@ -682,16 +687,58 @@ function buildUnlocks(
         blockUnlockOrder.push(...toAdd)
     }
 
+    const bundleSize = Math.max(1, Math.min(args.bundleSize, args.blockSize))
+    const usesBundleItems = bundleSize > 1 && args.progression === 'shuffled'
+    const bundles: Cell[][] = []
+
+    if (bundleSize > 1) {
+        // Base progression currently holds one block per location. Group the blocks into bundles
+        // following the unlock order, keep one "leader" location per bundle as the progression
+        // item, and free the rest so they become filler.
+        const blockIdToLocation = new Map<number, number>()
+        for (const [locationId, blockId] of unlockMap.entries()) {
+            blockIdToLocation.set(blockId, locationId)
+        }
+
+        const keptLocations = new Set<number>()
+
+        for (let start = 0; start < blockUnlockOrder.length; start += bundleSize) {
+            const bundleIndex = bundles.length
+            const chunk = blockUnlockOrder.slice(start, start + bundleSize)
+            bundles.push(chunk.map(cellFromBlockId))
+
+            const leaderLocation = blockIdToLocation.get(chunk[0]!)!
+            keptLocations.add(leaderLocation)
+
+            if (usesBundleItems) {
+                unlockMap.set(leaderLocation, blockBundleId(bundleIndex))
+            }
+        }
+
+        for (const locationId of Array.from(unlockMap.keys())) {
+            if (!keptLocations.has(locationId)) {
+                unlockMap.delete(locationId)
+                solvableLocations.set(locationId, { id: locationId, weight: 1 })
+            }
+        }
+    }
+
     if (args.duplicateProgression > 0) {
-        shuffleArray(duplicateBlocks, rng)
-        const toDuplicate = Math.floor(args.duplicateProgression * duplicateBlocks.length / 100.0)
-        duplicateBlocks.length = toDuplicate
+        const duplicateItems: number[] = bundleSize > 1
+            ? (usesBundleItems
+                ? bundles.map((_bundle, index) => blockBundleId(index))
+                : bundles.map(() => progressiveBlockId))
+            : duplicateBlocks.map(([row, col]) => cellToBlockId(row, col))
+
+        shuffleArray(duplicateItems, rng)
+        const toDuplicate = Math.floor(args.duplicateProgression * duplicateItems.length / 100.0)
+        duplicateItems.length = toDuplicate
 
         const solvableLocationsArray = Array.from(solvableLocations.values())
         shuffleArray(solvableLocationsArray, rng)
 
         for (const location of solvableLocationsArray) {
-            if (duplicateBlocks.length === 0) {
+            if (duplicateItems.length === 0) {
                 break
             }
 
@@ -699,9 +746,7 @@ function buildUnlocks(
                 continue
             }
 
-            const [row, col] = duplicateBlocks.pop()!
-            const blockId = cellToBlockId(row, col)
-            unlockMap.set(location.id, blockId)
+            unlockMap.set(location.id, duplicateItems.pop()!)
             solvableLocations.delete(location.id)
         }
     }
@@ -714,7 +759,7 @@ function buildUnlocks(
 
     addFillers(args, unlockMap, solvableLocations, rng)
 
-    return [ blockUnlockOrder, unlockMap ]
+    return [ blockUnlockOrder, unlockMap, usesBundleItems ? bundles : [] ]
 }
 
 
@@ -2470,6 +2515,7 @@ function clusterStateToCompleted(state: ClusterGenerationState): Completed {
         type: 'Completed',
         blockSize: state.blockSize,
         blockUnlockOrder: state.blockUnlockOrder,
+        bundles: state.bundles,
         givens: givens,
         puzzleAreas: encodedPuzzleAreas,
         solution: solution,
@@ -2597,6 +2643,17 @@ function blockSizeToOverlap(blockSize: number): [number, number] {
 
 function cellToBlockId(row: number, col: number): number {
     return 1000000 + row * 1000 + col
+}
+
+
+function cellFromBlockId(blockId: number): Cell {
+    const value = blockId - 1000000
+    return [Math.floor(value / 1000), value % 1000]
+}
+
+
+function blockBundleId(bundleIndex: number): number {
+    return blockBundleBaseId + bundleIndex + 1
 }
 
 

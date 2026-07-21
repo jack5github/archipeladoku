@@ -1,3 +1,4 @@
+import math
 from typing import Any
 
 from . import options, utils
@@ -35,6 +36,11 @@ class ArchipeladokuWorld(World):
         self.clusters = {}
         self.duplicate_progression_count = 0
         self.filler_counts = {}
+        self.bundle_size = 1
+        self.bundles = []
+        self.block_to_bundle = {}
+        self.bundle_count = 0
+        self.uses_bundle_items = False
         self.pre_fill_items = []
         self.item_name_groups = self.__class__.item_name_groups.copy()
         self.location_name_groups = self.__class__.location_name_groups.copy()
@@ -73,6 +79,7 @@ class ArchipeladokuWorld(World):
             self.block_unlock_order = [tuple(block) for block in slot_data["blockUnlockOrder"]]
             self.duplicate_progression_count = slot_data["duplicateProgressionCount"]
             self.filler_counts = slot_data["fillerCounts"]
+            self.bundle_size = slot_data["bundleSize"]
 
         else:
             board_positions = utils.position_boards(
@@ -113,22 +120,44 @@ class ArchipeladokuWorld(World):
 
             initial_unlock_count = self.options.block_size.value
             progression_items = len(self.block_unlock_order) - initial_unlock_count
-            self.duplicate_progression_count = progression_items * self.options.duplicate_progression.value // 100
-            self.filler_counts = utils.get_filler_counts(self.options, self.duplicate_progression_count)
+            self.bundle_size = min(self.options.bundle_size.value, self.options.block_size.value)
+            bundle_count = math.ceil(progression_items / self.bundle_size) if progression_items > 0 else 0
+            freed = progression_items - bundle_count
+            self.duplicate_progression_count = bundle_count * self.options.duplicate_progression.value // 100
+            self.filler_counts = utils.get_filler_counts(
+                self.options,
+                self.duplicate_progression_count,
+                freed,
+            )
 
         initial_unlock_count = self.options.block_size.value
 
-        for ( row, col ) in self.block_unlock_order[initial_unlock_count:]:
-            match self.options.progression:
-                case options.Progression.option_fixed:
+        self.bundles, self.block_to_bundle = utils.build_bundles(
+            self.block_unlock_order,
+            initial_unlock_count,
+            self.bundle_size,
+        )
+        self.bundle_count = len(self.bundles)
+        self.uses_bundle_items = (
+            self.options.progression == options.Progression.option_shuffled
+            and self.bundle_size >= 2
+        )
+
+        match self.options.progression:
+            case options.Progression.option_fixed:
+                if self.bundle_count > 0:
                     self.item_name_groups["Blocks"].add("Progressive Block")
-                    break
 
-                case options.Progression.option_shuffled:
-                    self.item_name_groups["Blocks"].add(utils.block_item_name(row, col))
+            case options.Progression.option_shuffled:
+                if self.uses_bundle_items:
+                    for bundle_index in range(len(self.bundles)):
+                        self.item_name_groups["Blocks"].add(utils.bundle_item_name(bundle_index))
+                else:
+                    for (row, col) in self.block_unlock_order[initial_unlock_count:]:
+                        self.item_name_groups["Blocks"].add(utils.block_item_name(row, col))
 
-                case _:
-                    raise ValueError("Invalid progression option")
+            case _:
+                raise ValueError("Invalid progression option")
 
         for cluster in self.clusters.values():
             for (row, col) in cluster.blocks:
@@ -181,15 +210,25 @@ class ArchipeladokuWorld(World):
 
             match self.options.progression:
                 case options.Progression.option_fixed:
-                    connection.access_rule = lambda state, unlock_req=cluster_unlock_requirements[cluster.id]: \
-                        state.has("Progressive Block", self.player, unlock_req) if unlock_req > 0 else True
+                    unlock_req = cluster_unlock_requirements[cluster.id]
+                    bundle_req = math.ceil(unlock_req / self.bundle_size)
+                    if bundle_req > 0:
+                        connection.access_rule = lambda state, bundle_req=bundle_req: \
+                            state.has("Progressive Block", self.player, bundle_req)
 
                 case options.Progression.option_shuffled:
                     cluster_blocks = cluster.blocks.difference(initial_blocks)
-                    block_names = [utils.block_item_name(row, col) for (row, col) in cluster_blocks]
+                    if self.uses_bundle_items:
+                        item_names = list({
+                            utils.bundle_item_name(self.block_to_bundle[block])
+                            for block in cluster_blocks
+                            if block in self.block_to_bundle
+                        })
+                    else:
+                        item_names = [utils.block_item_name(row, col) for (row, col) in cluster_blocks]
 
-                    connection.access_rule = lambda state, block_names=block_names: \
-                        state.has_all(block_names, self.player)
+                    connection.access_rule = lambda state, item_names=item_names: \
+                        state.has_all(item_names, self.player)
 
                 case _:
                     raise ValueError("Invalid progression option")
@@ -270,17 +309,21 @@ class ArchipeladokuWorld(World):
         match self.options.progression:
             case options.Progression.option_fixed:
                 last_cluster_requirement = max(cluster_unlock_requirements.values())
-                victory_location.access_rule = lambda state, last_cluster_requirement=last_cluster_requirement: \
-                    state.has("Progressive Block", self.player, last_cluster_requirement)
+                bundle_req = math.ceil(last_cluster_requirement / self.bundle_size)
+                victory_location.access_rule = lambda state, bundle_req=bundle_req: \
+                    state.has("Progressive Block", self.player, bundle_req)
 
             case options.Progression.option_shuffled:
-                all_blocks = [
-                    utils.block_item_name(row, col)
-                    for (row, col) in self.block_unlock_order[initial_unlock_count:]
-                    if row > 0
-                ]
-                victory_location.access_rule = lambda state, all_blocks=all_blocks: \
-                    state.has_all(all_blocks, self.player)
+                if self.uses_bundle_items:
+                    all_items = [utils.bundle_item_name(index) for index in range(len(self.bundles))]
+                else:
+                    all_items = [
+                        utils.block_item_name(row, col)
+                        for (row, col) in self.block_unlock_order[initial_unlock_count:]
+                        if row > 0
+                    ]
+                victory_location.access_rule = lambda state, all_items=all_items: \
+                    state.has_all(all_items, self.player)
 
             case _:
                 raise ValueError("Invalid progression option")
@@ -294,18 +337,21 @@ class ArchipeladokuWorld(World):
         initial_unlock_count = self.options.block_size.value
         items = []
 
-        for ( row, col ) in self.block_unlock_order[initial_unlock_count:]:
-            match self.options.progression:
-                case options.Progression.option_fixed:
-                    item = self.create_item("Progressive Block")
-                    items.append(item)
+        match self.options.progression:
+            case options.Progression.option_fixed:
+                for _ in range(self.bundle_count):
+                    items.append(self.create_item("Progressive Block"))
 
-                case options.Progression.option_shuffled:
-                    item = self.create_item(utils.block_item_name(row, col))
-                    items.append(item)
+            case options.Progression.option_shuffled:
+                if self.uses_bundle_items:
+                    for bundle_index in range(len(self.bundles)):
+                        items.append(self.create_item(utils.bundle_item_name(bundle_index)))
+                else:
+                    for (row, col) in self.block_unlock_order[initial_unlock_count:]:
+                        items.append(self.create_item(utils.block_item_name(row, col)))
 
-                case _:
-                    raise ValueError("Invalid progression option")
+            case _:
+                raise ValueError("Invalid progression option")
 
         if self.duplicate_progression_count > 0:
             items_to_duplicate = self.random.sample(
@@ -407,6 +453,8 @@ class ArchipeladokuWorld(World):
             "duplicateProgressionCount": self.duplicate_progression_count,
             "fillerCounts": self.filler_counts,
             "deathLink": self.options.death_link.value,
+            "bundleSize": self.bundle_size,
+            "bundles": self.bundles if self.uses_bundle_items else [],
         }
 
 
@@ -430,6 +478,8 @@ class ArchipeladokuWorld(World):
             classification = ItemClassification.useful
         elif id >= 400 and id < 500:
             classification = ItemClassification.trap
+        elif id >= 1001 and id < 1500:
+            classification = ItemClassification.progression
         elif id >= 1000000:
             classification = ItemClassification.progression
         else:

@@ -67,10 +67,16 @@ def get_total_filler_count(block_size: int, number_of_boards: int) -> int:
     ])
 
 
-def get_filler_counts(options, duplicate_progression_count: int) -> dict[str, int]:
-    """Calculate the count per filler item."""
+def get_filler_counts(options, duplicate_progression_count: int, extra_fillers: int = 0) -> dict[str, int]:
+    """Calculate the count per filler item.
+
+    extra_fillers is the number of progression slots freed up by bundling (each bundle replaces
+    several individual progression items), which must be filled with filler to keep the item and
+    location counts balanced.
+    """
 
     total_fillers = get_total_filler_count(options.block_size.value, options.number_of_boards.value)
+    total_fillers += extra_fillers
     total_fillers -= duplicate_progression_count
 
     ratios = {
@@ -369,6 +375,42 @@ def block_item_name(row: int, col: int) -> str:
     return f"Block {row_to_label(row)}{col}"
 
 
+max_bundles = 450
+
+
+def bundle_id(bundle_index: int) -> int:
+    return 1001 + bundle_index
+
+
+def bundle_item_name(bundle_index: int) -> str:
+    return f"Block Bundle {bundle_index + 1}"
+
+
+def build_bundles(
+    block_unlock_order: list[tuple[int, int]],
+    initial_unlock_count: int,
+    bundle_size: int,
+) -> tuple[list[list[tuple[int, int]]], dict[tuple[int, int], int]]:
+    """Chunk the non-initial blocks into consecutive bundles of the given size.
+
+    Returns the bundles (bundle index -> list of blocks) and a reverse lookup
+    (block -> bundle index). With a bundle size of 1 each bundle holds a single block.
+    """
+
+    progression_blocks = block_unlock_order[initial_unlock_count:]
+    bundles: list[list[tuple[int, int]]] = []
+    block_to_bundle: dict[tuple[int, int], int] = {}
+
+    for start in range(0, len(progression_blocks), bundle_size):
+        bundle_index = len(bundles)
+        chunk = progression_blocks[start:start + bundle_size]
+        bundles.append(chunk)
+        for block in chunk:
+            block_to_bundle[block] = bundle_index
+
+    return bundles, block_to_bundle
+
+
 def row_id(row: int, col: int) -> int:
     return 2000000 + row * 1000 + col
 
@@ -422,6 +464,7 @@ item_name_to_id = {
     "Emoji Trap": 401,
     "Disco Trap": 402,
     "Tunnel Vision Trap": 403,
+    # 1001-1450: Block Bundle Items, added below
     # 1xxxyyy: Block Items, row xxx, col yyy, added below
 }
 item_name_groups = {
@@ -429,6 +472,9 @@ item_name_groups = {
     "Items": {"Solve Random Cell", "Remove Random Candidate", "Solve Selected Cell"},
     "Traps": {"Emoji Trap", "Disco Trap", "Tunnel Vision Trap"},
 }
+for bundle_index in range(max_bundles):
+    item_name_to_id[bundle_item_name(bundle_index)] = bundle_id(bundle_index)
+    item_name_groups["Blocks"].add(bundle_item_name(bundle_index))
 location_name_to_id = {
     # 1xxxyyy: Solve Block Locations, row xxx, col yyy, added below
     # 2xxxyyy: Solve Row Locations, row xxx, col yyy, added below

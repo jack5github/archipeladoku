@@ -73,9 +73,13 @@ type alias Model =
     , autoApplyServerChecks : Bool
     , autoFillCandidatesOnUnlock : Bool
     , autoRemoveInvalidCandidates : Bool
+    , blockBundles : Dict ( Int, Int ) Int
     , blockSize : Int
     , boardData : Encode.Value
     , boardsPerCluster : Int
+    , bundleBlocks : Dict Int (List ( Int, Int ))
+    , bundleSize : Int
+    , bundleSizeInput : String
     , candidateLayout : Int
     , candidateMode : Bool
     , cellBlocks : Dict ( Int, Int ) (List Area)
@@ -206,6 +210,9 @@ type Msg
     | DuplicateProgressionChanged Int
     | DuplicateProgressionInputBlurred
     | DuplicateProgressionInputChanged String
+    | BundleSizeChanged Int
+    | BundleSizeInputBlurred
+    | BundleSizeInputChanged String
     | EmojiTrapRatioChanged Int
     | EmojiTrapRatioInputBlurred
     | EmojiTrapRatioInputChanged String
@@ -321,9 +328,13 @@ init flagsValue =
       , autoApplyServerChecks = False
       , autoFillCandidatesOnUnlock = False
       , autoRemoveInvalidCandidates = False
+      , blockBundles = Dict.empty
       , blockSize = 9
       , boardData = Encode.null
       , boardsPerCluster = 5
+      , bundleBlocks = Dict.empty
+      , bundleSize = 1
+      , bundleSizeInput = "1"
       , candidateLayout = 0
       , candidateMode = False
       , cellBlocks = Dict.empty
@@ -490,6 +501,8 @@ update msg model =
                 | blockSize = size
                 , numberOfBoards = min model.numberOfBoards (maxNumberOfBoards size)
                 , numberOfBoardsInput = String.fromInt (min model.numberOfBoards (maxNumberOfBoards size))
+                , bundleSize = clamp 1 size model.bundleSize
+                , bundleSizeInput = String.fromInt (clamp 1 size model.bundleSize)
               }
             , Cmd.none
             )
@@ -733,6 +746,40 @@ update msg model =
             , Cmd.none
             )
 
+        BundleSizeChanged value ->
+            ( { model
+                | bundleSize = value
+                , bundleSizeInput = String.fromInt value
+              }
+            , Cmd.none
+            )
+
+        BundleSizeInputBlurred ->
+            let
+                value : Int
+                value =
+                    model.bundleSizeInput
+                        |> String.toInt
+                        |> Maybe.withDefault model.bundleSize
+                        |> clamp 1 model.blockSize
+            in
+            ( { model
+                | bundleSize = value
+                , bundleSizeInput = String.fromInt value
+              }
+            , Cmd.none
+            )
+
+        BundleSizeInputChanged value ->
+            ( { model
+                | bundleSize =
+                    String.toInt value
+                        |> Maybe.withDefault model.bundleSize
+                , bundleSizeInput = value
+              }
+            , Cmd.none
+            )
+
         EmojiTrapRatioChanged value ->
             ( { model
                 | emojiTrapRatio = value
@@ -932,6 +979,18 @@ update msg model =
                         , solution = board.solution
                         , unlockedBlocks = Set.empty
                         , unlockMap = board.unlockMap
+                        , bundleBlocks =
+                            if model.gameIsLocal then
+                                board.bundles
+
+                            else
+                                model.bundleBlocks
+                        , blockBundles =
+                            if model.gameIsLocal then
+                                buildBlockBundles board.bundles
+
+                            else
+                                model.blockBundles
                       }
                     , if not model.gameIsLocal && model.gameState == Generating then
                         sendPlayingStatus ()
@@ -1085,6 +1144,9 @@ update msg model =
                         , locationScouting = slotData.locationScouting
                         , progression = slotData.progression
                         , seedInput = slotData.seed
+                        , bundleSize = slotData.bundleSize
+                        , bundleBlocks = slotData.bundleBlocks
+                        , blockBundles = buildBlockBundles slotData.bundleBlocks
                       }
                     , Cmd.none
                     )
@@ -1237,6 +1299,7 @@ update msg model =
                 (encodeGenerateArgs
                     { blockSize = model.blockSize
                     , boardsPerCluster = model.boardsPerCluster
+                    , bundleSize = model.bundleSize
                     , difficulty = model.difficulty
                     , discoTrapRatio = model.discoTrapRatio
                     , duplicateProgression = model.duplicateProgression
@@ -2094,6 +2157,7 @@ type alias ConnectionHistoryEntry =
 type alias GeneratedBoard =
     { blockSize : Int
     , blockUnlockOrder : List ( Int, Int )
+    , bundles : Dict Int (List ( Int, Int ))
     , givens : Dict ( Int, Int ) Int
     , puzzleAreas : PuzzleAreas
     , solution : Dict ( Int, Int ) Int
@@ -2121,6 +2185,7 @@ type alias PuzzleAreas =
 type alias GenerateArgs =
     { blockSize : Int
     , boardsPerCluster : Int
+    , bundleSize : Int
     , difficulty : Int
     , discoTrapRatio : Int
     , duplicateProgression : Int
@@ -2169,6 +2234,7 @@ type HighlightMode
 type Item
     = ProgressiveBlock
     | Block ( Int, Int )
+    | BlockBundle Int
     | SolveSelectedCell
     | SolveRandomCell
     | RemoveRandomCandidate
@@ -2259,7 +2325,9 @@ type MessageExtra
 
 
 type alias SlotData =
-    { deathLink : Bool
+    { bundleBlocks : Dict Int (List ( Int, Int ))
+    , bundleSize : Int
+    , deathLink : Bool
     , locationScouting : LocationScouting
     , progression : Progression
     , seed : Int
@@ -2295,6 +2363,8 @@ type alias UnpackedBoardCells =
 
 type alias SavedGame =
     { blockSize : Int
+    , bundleBlocks : Dict Int (List ( Int, Int ))
+    , bundleSize : Int
     , coordinates : List Int
     , current : List Int
     , discoTrapTriggers : Int
@@ -2328,6 +2398,7 @@ type alias YamlOptions =
     , difficulty : Maybe Int
     , progression : Maybe Progression
     , duplicateProgression : Maybe Int
+    , bundleSize : Maybe Int
     , locationScouting : Maybe LocationScouting
     , solveSelectedCellRatio : Maybe Int
     , solveRandomCellRatio : Maybe Int
@@ -2471,13 +2542,57 @@ connectionHistoryDecoder =
 
 generatedBoardDecoder : Decode.Decoder GeneratedBoard
 generatedBoardDecoder =
-    Decode.map6 GeneratedBoard
+    Decode.map7 GeneratedBoard
         (Decode.field "blockSize" Decode.int)
         (Decode.field "blockUnlockOrder" (Decode.list blockUnlockOrderDecoder))
+        (Decode.field "bundles" bundlesDecoder)
         (Decode.field "givens" (cellsDictDecoder Decode.int))
         (Decode.field "puzzleAreas" puzzleAreasDecoder)
         (Decode.field "solution" (cellsDictDecoder Decode.int))
         (Decode.field "unlockMap" unlockMapDecoder)
+
+
+bundlesDecoder : Decode.Decoder (Dict Int (List ( Int, Int )))
+bundlesDecoder =
+    Decode.list (Decode.list (tupleDecoder Decode.int Decode.int))
+        |> Decode.map
+            (\bundleList ->
+                bundleList
+                    |> List.indexedMap (\index cells -> ( index + 1, cells ))
+                    |> Dict.fromList
+            )
+
+
+buildBlockBundles : Dict Int (List ( Int, Int )) -> Dict ( Int, Int ) Int
+buildBlockBundles bundleBlocks =
+    Dict.foldl
+        (\bundle cells acc ->
+            List.foldl (\cell -> Dict.insert cell bundle) acc cells
+        )
+        Dict.empty
+        bundleBlocks
+
+
+encodeBundleBlocks : Dict Int (List ( Int, Int )) -> Encode.Value
+encodeBundleBlocks bundleBlocks =
+    Dict.toList bundleBlocks
+        |> Encode.list
+            (\( index, cells ) ->
+                Encode.list identity
+                    [ Encode.int index
+                    , Encode.list (encodeTuple Encode.int Encode.int) cells
+                    ]
+            )
+
+
+bundleBlocksSaveDecoder : Decode.Decoder (Dict Int (List ( Int, Int )))
+bundleBlocksSaveDecoder =
+    Decode.list
+        (Decode.map2 Tuple.pair
+            (Decode.index 0 Decode.int)
+            (Decode.index 1 (Decode.list (tupleDecoder Decode.int Decode.int)))
+        )
+        |> Decode.map Dict.fromList
 
 
 blockUnlockOrderDecoder : Decode.Decoder ( Int, Int )
@@ -2592,6 +2707,7 @@ encodeGenerateArgs args =
     Encode.object
         [ ( "blockSize", Encode.int args.blockSize )
         , ( "boardsPerCluster", Encode.int args.boardsPerCluster )
+        , ( "bundleSize", Encode.int args.bundleSize )
         , ( "difficulty", Encode.int args.difficulty )
         , ( "discoTrapRatio", Encode.int args.discoTrapRatio )
         , ( "duplicateProgression", Encode.int args.duplicateProgression )
@@ -2796,8 +2912,12 @@ slotDataDecoder =
     Field.optional "locationScouting" locationScoutingDecoder <| \locationScouting ->
     Field.optional "progression" progressionDecoder <| \progression ->
     Field.require "seed" Decode.int <| \seed ->
+    Field.optional "bundleSize" Decode.int <| \bundleSize ->
+    Field.optional "bundles" bundlesDecoder <| \bundles ->
     Decode.succeed
-        { deathLink = Maybe.withDefault 0 deathLink == 1
+        { bundleBlocks = Maybe.withDefault Dict.empty bundles
+        , bundleSize = Maybe.withDefault 1 bundleSize
+        , deathLink = Maybe.withDefault 0 deathLink == 1
         , locationScouting = Maybe.withDefault ScoutingManual locationScouting
         , progression = Maybe.withDefault Shuffled progression
         , seed = seed
@@ -2875,6 +2995,7 @@ buildOptionsYaml model =
                     , ( "number_of_boards", yamlRecordValue <| String.fromInt model.numberOfBoards )
                     , ( "difficulty", yamlRecordValue <| difficultyToString model.difficulty )
                     , ( "progression", yamlRecordValue <| progressionToString model.progression )
+                    , ( "bundle_size", yamlRecordValue <| String.fromInt model.bundleSize )
                     , ( "duplicate_progression", yamlRecordValue <| String.fromInt model.duplicateProgression )
                     , ( "location_scouting", yamlRecordValue <| locationScoutingToString model.locationScouting )
                     , ( "solve_selected_cell_ratio", yamlRecordValue <| String.fromInt model.solveSelectedCellRatio )
@@ -3091,6 +3212,7 @@ decodeOptionsYaml =
         |> Yaml.Decode.andMap (apdkField "difficulty" yamlDifficultyDecoder)
         |> Yaml.Decode.andMap (apdkField "progression" yamlProgressionDecoder)
         |> Yaml.Decode.andMap (apdkField "duplicate_progression" decodeYamlOptionInt)
+        |> Yaml.Decode.andMap (apdkField "bundle_size" decodeYamlOptionInt)
         |> Yaml.Decode.andMap (apdkField "location_scouting" yamlLocationScoutingDecoder)
         |> Yaml.Decode.andMap (apdkField "solve_selected_cell_ratio" decodeYamlOptionInt)
         |> Yaml.Decode.andMap (apdkField "solve_random_cell_ratio" decodeYamlOptionInt)
@@ -3440,6 +3562,8 @@ encodeSavedGame timestamp model =
     in
     Encode.object
         [ ( "blockSize", Encode.int model.blockSize )
+        , ( "bundleBlocks", encodeBundleBlocks model.bundleBlocks )
+        , ( "bundleSize", Encode.int model.bundleSize )
         , ( "coordinates", Encode.list Encode.int cells.coordinates )
         , ( "current", Encode.list Encode.int cells.current )
         , ( "discoTrapTriggers", Encode.int model.discoTrapTriggers )
@@ -3468,6 +3592,8 @@ encodeSavedGame timestamp model =
 savedGameDecoder : Decode.Decoder SavedGame
 savedGameDecoder =
     Field.require "blockSize" Decode.int <| \blockSize ->
+    Field.optional "bundleBlocks" bundleBlocksSaveDecoder <| \bundleBlocks ->
+    Field.optional "bundleSize" Decode.int <| \bundleSize ->
     Field.require "coordinates" (Decode.list Decode.int) <| \coordinates ->
     Field.require "current" (Decode.list Decode.int) <| \current ->
     Field.require "discoTrapTriggers" Decode.int <| \discoTrapTriggers ->
@@ -3492,6 +3618,8 @@ savedGameDecoder =
     Field.require "unlockedBlocks" (Decode.list (tupleDecoder Decode.int Decode.int)) <| \unlockedBlocks ->
     Decode.succeed
         { blockSize = blockSize
+        , bundleBlocks = Maybe.withDefault Dict.empty bundleBlocks
+        , bundleSize = Maybe.withDefault 1 bundleSize
         , coordinates = coordinates
         , current = current
         , discoTrapTriggers = discoTrapTriggers
@@ -4623,10 +4751,19 @@ updateStateItem : Item -> Model -> ( Model, Cmd Msg )
 updateStateItem item model =
     case item of
         ProgressiveBlock ->
-            unlockNextBlock model
+            applyList
+                (\_ -> unlockNextBlock)
+                (List.range 1 (clamp 1 model.blockSize model.bundleSize))
+                ( model, Cmd.none )
 
         Block block ->
             unlockBlock True block model
+
+        BlockBundle index ->
+            applyList
+                (unlockBlock True)
+                (Dict.get index model.bundleBlocks |> Maybe.withDefault [])
+                ( model, Cmd.none )
 
         SolveSelectedCell ->
             ( { model | solveSelectedCellReceived = model.solveSelectedCellReceived + 1 }
@@ -5009,6 +5146,16 @@ cellHtmlId ( row, col ) =
     "cell-" ++ String.fromInt row ++ "-" ++ String.fromInt col
 
 
+blockBundleBaseId : Int
+blockBundleBaseId =
+    1000
+
+
+maxBundles : Int
+maxBundles =
+    450
+
+
 cellToBlockId : ( Int, Int ) -> Int
 cellToBlockId ( row, col ) =
     1000000 + row * 1000 + col
@@ -5274,6 +5421,9 @@ itemFromId id =
     if id >= 1000000 then
         Block (cellFromId id)
 
+    else if id > blockBundleBaseId && id <= blockBundleBaseId + maxBundles then
+        BlockBundle (id - blockBundleBaseId)
+
     else if id == 1 then
         SolveRandomCell
 
@@ -5304,6 +5454,9 @@ itemToId item =
     case item of
         Block block ->
             cellToBlockId block
+
+        BlockBundle index ->
+            blockBundleBaseId + index
 
         SolveRandomCell ->
             1
@@ -5362,7 +5515,7 @@ createHint : Int -> Item -> Hint
 createHint locationId item =
     { locationId = locationId
     , locationName = ""
-    , itemId = 0
+    , itemId = itemToId item
     , itemName = itemName item
     , itemClass = itemClassification item
     , senderAlias = ""
@@ -5381,6 +5534,9 @@ itemName item =
 
         Block ( row, col ) ->
             "Block " ++ rowToLabel row ++ String.fromInt col
+
+        BlockBundle index ->
+            "Block Bundle " ++ String.fromInt index
 
         SolveSelectedCell ->
             "Solve Selected Cell"
@@ -5411,6 +5567,9 @@ itemClassification item =
             Progression
 
         Block _ ->
+            Progression
+
+        BlockBundle _ ->
             Progression
 
         SolveSelectedCell ->
@@ -5692,6 +5851,9 @@ loadSavedGame save model =
         , cellCols = buildCellAreasMap save.puzzleAreas.cols
         , cellRows = buildCellAreasMap save.puzzleAreas.rows
         , blockSize = save.blockSize
+        , bundleSize = save.bundleSize
+        , bundleBlocks = save.bundleBlocks
+        , blockBundles = buildBlockBundles save.bundleBlocks
         , current = cells.current
         , discoTrapReceived = 0
         , discoTrapTriggers = save.discoTrapTriggers
@@ -6189,6 +6351,8 @@ applyYamlOptions opts model =
         , progression = opts.progression |> Maybe.withDefault model.progression
         , duplicateProgression = setIntField .duplicateProgression .duplicateProgression
         , duplicateProgressionInput = setIntAsStringField .duplicateProgression .duplicateProgressionInput
+        , bundleSize = setIntField .bundleSize .bundleSize
+        , bundleSizeInput = setIntAsStringField .bundleSize .bundleSizeInput
         , locationScouting = opts.locationScouting |> Maybe.withDefault model.locationScouting
         , solveSelectedCellRatio = setIntField .solveSelectedCellRatio .solveSelectedCellRatio
         , solveSelectedCellRatioInput = setIntAsStringField .solveSelectedCellRatio .solveSelectedCellRatioInput
@@ -6697,6 +6861,49 @@ viewMenuOptionsBoard model =
                     , HA.style "align-items" "center"
                     , HA.style "justify-content" "space-between"
                     ]
+                    [ Html.text "Bundle Size:"
+                    , viewOptionHint
+                        "bundle-size-hint"
+                        (String.join
+                            "\n"
+                            [ "How many blocks a single progression item unlocks at once."
+                            , "- A value of 1 disables bundling."
+                            , "- For Fixed progression each Progressive Block is worth this many unlocks."
+                            , "- For Shuffled progression each bundle is a Block Bundle item unlocking this many blocks."
+                            ]
+                        )
+                    ]
+                , Html.div
+                    [ HA.class "row gap-s"
+                    , HA.style "align-items" "center"
+                    ]
+                    [ Html.input
+                        [ HA.class "input"
+                        , HA.type_ "number"
+                        , HA.style "width" "3em"
+                        , HA.min "1"
+                        , HA.max (String.fromInt model.blockSize)
+                        , HA.value model.bundleSizeInput
+                        , HE.onBlur BundleSizeInputBlurred
+                        , HE.onInput BundleSizeInputChanged
+                        ]
+                        []
+                    , viewRangeSlider
+                        model.bundleSize
+                        1
+                        model.blockSize
+                        BundleSizeChanged
+                        Nothing
+                    ]
+                ]
+            , Html.div
+                [ HA.class "column gap-s"
+                ]
+                [ Html.div
+                    [ HA.class "row gap-m"
+                    , HA.style "align-items" "center"
+                    , HA.style "justify-content" "space-between"
+                    ]
                     [ Html.text "Duplicate Progression Items:"
                     , viewOptionHint
                         "duplicate-progression-hint"
@@ -7114,9 +7321,21 @@ viewMenuOptionsStats model =
                 |> Set.fromList
                 |> Set.size
 
+        progressionBlocks : Int
+        progressionBlocks =
+            List.length puzzleAreas.blocks - model.blockSize
+
+        effectiveBundleSize : Int
+        effectiveBundleSize =
+            clamp 1 model.blockSize model.bundleSize
+
         rawProgressionItems : Int
         rawProgressionItems =
-            List.length puzzleAreas.blocks - model.blockSize
+            if progressionBlocks <= 0 then
+                0
+
+            else
+                (progressionBlocks + effectiveBundleSize - 1) // effectiveBundleSize
 
         progressionItems : Int
         progressionItems =
@@ -8166,13 +8385,40 @@ viewBlockUnlockInfo model block =
         Html.text ""
 
     else
-        case Dict.get (cellToBlockId ( block.startRow, block.startCol )) model.hints of
+        let
+            maybeBundle : Maybe Int
+            maybeBundle =
+                Dict.get ( block.startRow, block.startCol ) model.blockBundles
+
+            ( unlockItemId, unlockItemName ) =
+                case maybeBundle of
+                    Just bundle ->
+                        ( blockBundleBaseId + bundle
+                        , "Block Bundle " ++ String.fromInt bundle
+                        )
+
+                    Nothing ->
+                        ( cellToBlockId ( block.startRow, block.startCol )
+                        , "Block " ++ rowToLabel block.startRow ++ String.fromInt block.startCol
+                        )
+
+            bundlePrefix : String
+            bundlePrefix =
+                case maybeBundle of
+                    Just _ ->
+                        unlockItemName ++ " — "
+
+                    Nothing ->
+                        ""
+        in
+        case Dict.get unlockItemId model.hints of
             Just item ->
                 Html.div
                     []
                     [ Html.text
                         (String.concat
                             [ "Unlock: "
+                            , bundlePrefix
                             , item.locationName
                             , " ("
                             , item.senderAlias
@@ -8187,25 +8433,20 @@ viewBlockUnlockInfo model block =
                 Html.div
                     [ HA.class "row gap-m"
                     ]
-                    [ Html.text "Unlock: ???"
-                    , if model.progression == Shuffled then
-                        Html.button
-                            [ HA.class "button"
-                            , HE.onClick
-                                (HintItemPressed
-                                    (String.concat
-                                        [ "Block "
-                                        , rowToLabel block.startRow
-                                        , String.fromInt block.startCol
-                                        ]
-                                    )
-                                )
-                            , HA.disabled (model.hintPoints < model.hintCost)
-                            ]
-                            [ Html.text "Hint" ]
+                    [ Html.text
+                        (case maybeBundle of
+                            Just _ ->
+                                "Unlock: " ++ unlockItemName
 
-                      else
-                        Html.text ""
+                            Nothing ->
+                                "Unlock: ???"
+                        )
+                    , Html.button
+                        [ HA.class "button"
+                        , HE.onClick (HintItemPressed unlockItemName)
+                        , HA.disabled (model.hintPoints < model.hintCost)
+                        ]
+                        [ Html.text "Hint" ]
                     ]
 
 
@@ -8268,6 +8509,21 @@ viewCellLabel label row col =
         ]
 
 
+bundleContents : Model -> Hint -> List ( Int, Int )
+bundleContents model hint =
+    if
+        (model.gameIsLocal || hint.receiverName == model.player)
+            && hint.itemId > blockBundleBaseId
+            && hint.itemId <= blockBundleBaseId + maxBundles
+    then
+        Dict.get (hint.itemId - blockBundleBaseId) model.bundleBlocks
+            |> Maybe.withDefault []
+            |> List.sort
+
+    else
+        []
+
+
 viewReward : Model -> Int -> Area -> Html Msg
 viewReward model id area =
     case Dict.get id model.scoutedItems of
@@ -8290,6 +8546,23 @@ viewReward model id area =
                         , ")"
                         ]
                     )
+                , case bundleContents model hint of
+                    [] ->
+                        Html.text ""
+
+                    cells ->
+                        Html.div
+                            []
+                            [ Html.text
+                                (String.concat
+                                    [ "Unlocks: "
+                                    , List.map
+                                        (\( row, col ) -> rowToLabel row ++ String.fromInt col)
+                                        cells
+                                        |> String.join ", "
+                                    ]
+                                )
+                            ]
                 , if Set.member id model.solvedLocations then
                     Html.text " ✅"
 
