@@ -184,7 +184,7 @@ class PreFillNothingsPercent(Options.Range):
     display_name = "Pre-fill Nothings Percentage"
     range_start = 0
     range_end = 100
-    default = 50
+    default = 100
 
 
 class DeathLink(Options.DeathLink):
