@@ -257,6 +257,23 @@ app.ports.zoomReset?.subscribe(() => {
 
 })
 
+function sendKeyboardLayout() {
+    if (!navigator.keyboard || !navigator.keyboard.getLayoutMap) {
+        return
+    }
+
+    navigator.keyboard.getLayoutMap().then(layoutMap => {
+        const layout = {}
+        for (const [ code, key ] of layoutMap) {
+            layout[code] = key
+        }
+        app.ports.receiveKeyboardLayout.send(layout)
+    })
+}
+
+sendKeyboardLayout()
+navigator.keyboard?.addEventListener?.('layoutchange', sendKeyboardLayout)
+
 client.socket.on('disconnected', () => {
     app.ports.receiveConnectionStatus.send(false)
 })

@@ -124,6 +124,37 @@ h1, h2 {
     margin-bottom: var(--spacing-m);
 }
 
+.keybindings-panel {
+    width: 500px;
+    max-width: 90vw;
+    max-height: 80vh;
+}
+
+.keybindings-instructions {
+    margin: 0;
+}
+
+.keybindings-list {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: var(--spacing-s) var(--spacing-m);
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-right: var(--spacing-s);
+}
+
+.keybinding-key {
+    min-width: 6rem;
+    text-align: center;
+}
+
+.keybinding-key-listening {
+    background-color: var(--color-button-bg-active);
+    outline: 2px solid var(--color-border);
+}
+
 .option-hint {
     top: calc(anchor(bottom) + var(--spacing-s));
     right: anchor(right);

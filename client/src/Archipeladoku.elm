@@ -62,6 +62,7 @@ port receiveHintCost : (Int -> msg) -> Sub msg
 port receiveHintPoints : (Int -> msg) -> Sub msg
 port receiveHints : (Decode.Value -> msg) -> Sub msg
 port receiveItems : (List Int -> msg) -> Sub msg
+port receiveKeyboardLayout : (Decode.Value -> msg) -> Sub msg
 port receiveLocalGameSave : (Decode.Value -> msg) -> Sub msg
 port receiveMessage : (Decode.Value -> msg) -> Sub msg
 port receiveOnlineGameSave : (Decode.Value -> msg) -> Sub msg
@@ -126,7 +127,11 @@ type alias Model =
     , hintCost : Int
     , hintPoints : Int
     , host : String
+    , inputModifierDebounce : Int
+    , keyBindings : Dict String (List String)
+    , keyboardLayout : Dict String String
     , lastSaveTime : Int
+    , listeningForBinding : Maybe ( BindableAction, Int )
     , localGameSave : Maybe SavedGame
     , locationScouting : LocationScouting
     , lockedBlocks : List ( Int, Int )
@@ -161,8 +166,8 @@ type alias Model =
     , seedInput : Int
     , selectedCell : ( Int, Int )
     , serverCheckedLocations : Set Int
-    , shiftDebounce : Int
     , showInputErrors : Bool
+    , showKeybindingsMenu : Bool
     , showToastMessages : Bool
     , solution : Dict ( Int, Int ) Int
     , solveRandomCellRatio : Int
@@ -200,12 +205,12 @@ type Msg
     | CandidateModeChanged Bool
     | CellSelected ( Int, Int )
     | ClearBoardPressed
+    | ClearCellPressed
     | ColorSchemeChanged String
     | ConnectionHistoryQuickFillPressed ConnectionHistoryEntry
     | ConnectPressed
     | DeathLinkInputChanged Bool
     | DeathLinkTriggered Decode.Value
-    | DeletePressed
     | DifficultyChanged Int
     | DisabledLocationChanged String Bool
     | DiscoTrapRatioChanged Int
@@ -234,6 +239,7 @@ type Msg
     | GotHintPoints Int
     | GotHints Decode.Value
     | GotItems (List Int)
+    | GotKeyboardLayout Decode.Value
     | GotLocalGameSave Decode.Value
     | GotMessage Decode.Value
     | GotYamlContent String
@@ -245,6 +251,10 @@ type Msg
     | HighlightModeChanged HighlightMode
     | HintItemPressed String
     | HostInputChanged String
+    | InputModifierDebouncePassed Int
+    | InputModifierHeld
+    | InputModifierReleased
+    | KeyBindingCaptured String
     | LoadYamlPressed
     | LocationScoutingChanged LocationScouting
     | MessageInputChanged String
@@ -265,11 +275,13 @@ type Msg
     | ProgressionBalancingChanged Int
     | ProgressionBalancingInputBlurred
     | ProgressionBalancingInputChanged String
+    | RebindSlotPressed BindableAction Int
     | RemoveInvalidCandidatesPressed
     | RemoveRandomCandidatePressed
     | RemoveRandomCandidateRatioChanged Int
     | RemoveRandomCandidateRatioInputBlurred
     | RemoveRandomCandidateRatioInputChanged String
+    | ResetKeybindingsPressed
     | ResumeLocalGamePressed SavedGame
     | ScoutLocationPressed Int
     | SecondPassed
@@ -277,9 +289,6 @@ type Msg
     | SelectSingleCandidateCellPressed
     | SelectSolvableBoardPressed
     | SendMessagePressed
-    | ShiftDebouncePassed Int
-    | ShiftHeld
-    | ShiftReleased
     | ShowInputErrorsChanged Bool
     | ShowToastMessagesChanged Bool
     | SolveRandomCellPressed
@@ -295,6 +304,7 @@ type Msg
     | SyncSolvedToServerPressed
     | ToggleCandidateModePressed
     | ToggleHighlightModePressed
+    | ToggleKeybindingsMenuPressed
     | TrapDurationChanged String
     | TriggerDiscoTrapPressed
     | TriggerEmojiTrapPressed
@@ -384,7 +394,11 @@ init flagsValue =
       , hintCost = 0
       , hintPoints = 0
       , host = ""
+      , inputModifierDebounce = 0
+      , keyBindings = defaultKeyBindings
+      , keyboardLayout = Dict.empty
       , lastSaveTime = 0
+      , listeningForBinding = Nothing
       , localGameSave = Nothing
       , locationScouting = ScoutingManual
       , lockedBlocks = []
@@ -424,8 +438,8 @@ init flagsValue =
       , seedInput = flags.seed
       , selectedCell = ( 1, 1 )
       , serverCheckedLocations = Set.empty
-      , shiftDebounce = 0
       , showInputErrors = True
+      , showKeybindingsMenu = False
       , showToastMessages = True
       , solution = Dict.empty
       , solveRandomCellRatio = 150
@@ -467,12 +481,18 @@ subscriptions model =
         , receiveHintPoints GotHintPoints
         , receiveHints GotHints
         , receiveItems GotItems
+        , receiveKeyboardLayout GotKeyboardLayout
         , receiveLocalGameSave GotLocalGameSave
         , receiveMessage GotMessage
         , receiveOnlineGameSave GotOnlineGameSave
         , receiveSlotData GotSlotData
         , if List.any ((<) 0) (timers model) || not (List.isEmpty model.toastMessages) then
             Time.every 1000 (\_ -> SecondPassed)
+
+          else
+            Sub.none
+        , if model.showKeybindingsMenu && model.listeningForBinding == Nothing then
+            Browser.Events.onKeyDown escapeToCloseDecoder
 
           else
             Sub.none
@@ -584,6 +604,24 @@ update msg model =
             )
                 |> andThen (updateState True)
 
+        ClearCellPressed ->
+            if Set.member model.selectedCell model.visibleCells
+                && not (cellIsGiven model model.selectedCell)
+            then
+                ( { model
+                    | current = Dict.remove model.selectedCell model.current
+                    , pendingCellChanges = Set.insert model.selectedCell model.pendingCellChanges
+                    , undoStack = pushUndoStack model
+                  }
+                , Cmd.none
+                )
+                    |> andThen (updateState True)
+
+            else
+                ( model
+                , Cmd.none
+                )
+
         ColorSchemeChanged scheme ->
             ( { model | colorScheme = scheme }
             , setLocalStorage ( "apdk-color-scheme", scheme )
@@ -660,24 +698,6 @@ update msg model =
             , Cmd.none
             )
                 |> andThen (updateState True)
-
-        DeletePressed ->
-            if Set.member model.selectedCell model.visibleCells
-                && not (cellIsGiven model model.selectedCell)
-            then
-                ( { model
-                    | current = Dict.remove model.selectedCell model.current
-                    , pendingCellChanges = Set.insert model.selectedCell model.pendingCellChanges
-                    , undoStack = pushUndoStack model
-                  }
-                , Cmd.none
-                )
-                    |> andThen (updateState True)
-
-            else
-                ( model
-                , Cmd.none
-                )
 
         DifficultyChanged value ->
             ( { model | difficulty = value }
@@ -1096,6 +1116,15 @@ update msg model =
             )
                 |> andThen (updateState True)
 
+        GotKeyboardLayout value ->
+            ( { model
+                | keyboardLayout =
+                    Decode.decodeValue (Decode.dict Decode.string) value
+                        |> Result.withDefault model.keyboardLayout
+              }
+            , Cmd.none
+            )
+
         GotLocalGameSave value ->
             case Decode.decodeValue savedGameDecoder value of
                 Ok savedGame ->
@@ -1202,6 +1231,55 @@ update msg model =
             ( { model | host = value }
             , setLocalStorage ( "apdk-host", value )
             )
+
+        InputModifierDebouncePassed debounceId ->
+            if model.inputModifierDebounce == debounceId then
+                ( { model | heldKeys = Set.remove "inputModifier" model.heldKeys }
+                , Cmd.none
+                )
+
+            else
+                ( model, Cmd.none )
+
+        InputModifierHeld ->
+            ( { model
+                | heldKeys = Set.insert "inputModifier" model.heldKeys
+                , inputModifierDebounce = model.inputModifierDebounce + 1
+              }
+            , Cmd.none
+            )
+
+        InputModifierReleased ->
+            ( model
+            , Process.sleep 100
+                |> Task.perform (\_ -> InputModifierDebouncePassed model.inputModifierDebounce)
+            )
+
+        KeyBindingCaptured code ->
+            case model.listeningForBinding of
+                Just ( action, slotIndex ) ->
+                    if code == "Escape" then
+                        ( { model | listeningForBinding = Nothing }
+                        , Cmd.none
+                        )
+
+                    else
+                        let
+                            newBindings : Dict String (List String)
+                            newBindings =
+                                setBindingSlot action slotIndex code model.keyBindings
+                        in
+                        ( { model
+                            | keyBindings = newBindings
+                            , listeningForBinding = Nothing
+                          }
+                        , setLocalStorage ( "apdk-keybindings", keyBindingsToString newBindings )
+                        )
+
+                Nothing ->
+                    ( model
+                    , Cmd.none
+                    )
 
         LoadYamlPressed ->
             ( model
@@ -1424,6 +1502,25 @@ update msg model =
             , Cmd.none
             )
 
+        RebindSlotPressed action slotIndex ->
+            if model.listeningForBinding == Just ( action, slotIndex ) then
+                let
+                    newBindings : Dict String (List String)
+                    newBindings =
+                        clearBindingSlot action slotIndex model.keyBindings
+                in
+                ( { model
+                    | keyBindings = newBindings
+                    , listeningForBinding = Nothing
+                  }
+                , setLocalStorage ( "apdk-keybindings", keyBindingsToString newBindings )
+                )
+
+            else
+                ( { model | listeningForBinding = Just ( action, slotIndex ) }
+                , Cmd.none
+                )
+
         RemoveInvalidCandidatesPressed ->
             ( removeInvalidCandidates model
             , Cmd.none
@@ -1477,8 +1574,11 @@ update msg model =
                                 model.seed
                                 |> Tuple.mapFirst Just
             in
-            case maybeTarget of
-                Just ( cell, number ) ->
+            case ( maybeTarget, model.removeRandomCandidateReceived > model.removeRandomCandidateUsed ) of
+                ( _, False ) ->
+                    ( model, Cmd.none )
+
+                ( Just ( cell, number ), True ) ->
                     ( { model
                         | current = Dict.update cell (toggleNumber number) model.current
                         , pendingCellChanges = Set.insert cell model.pendingCellChanges
@@ -1499,7 +1599,7 @@ update msg model =
                     )
                         |> andThen (updateState True)
 
-                Nothing ->
+                ( Nothing, True ) ->
                     ( model
                         |> addLocalMessage
                             True
@@ -1539,6 +1639,11 @@ update msg model =
                 , removeRandomCandidateRatioInput = value
               }
             , Cmd.none
+            )
+
+        ResetKeybindingsPressed ->
+            ( { model | keyBindings = defaultKeyBindings }
+            , setLocalStorage ( "apdk-keybindings", keyBindingsToString defaultKeyBindings )
             )
 
         ResumeLocalGamePressed save ->
@@ -1715,29 +1820,6 @@ update msg model =
                 sendMessage model.messageInput
             )
 
-        ShiftDebouncePassed debounceId ->
-            if model.shiftDebounce == debounceId then
-                ( { model | heldKeys = Set.remove "Shift" model.heldKeys }
-                , Cmd.none
-                )
-
-            else
-                ( model, Cmd.none )
-
-        ShiftHeld ->
-            ( { model
-                | heldKeys = Set.insert "Shift" model.heldKeys
-                , shiftDebounce = model.shiftDebounce + 1
-              }
-            , Cmd.none
-            )
-
-        ShiftReleased ->
-            ( model
-            , Process.sleep 100
-                |> Task.perform (\_ -> ShiftDebouncePassed model.shiftDebounce)
-            )
-
         ShowInputErrorsChanged value ->
             ( { model | showInputErrors = value }
             , setLocalStorage ( "apdk-show-input-errors", if value then "1" else "0" )
@@ -1778,8 +1860,11 @@ update msg model =
                                 model.seed
                                 |> Tuple.mapFirst Just
             in
-            case maybeTargetCell of
-                Just targetCell ->
+            case ( maybeTargetCell, model.solveRandomCellReceived > model.solveRandomCellUsed ) of
+                ( _, False ) ->
+                    ( model, Cmd.none )
+
+                ( Just targetCell, True ) ->
                     ( { model
                         | current = Dict.remove targetCell model.current
                         , givens = Set.insert targetCell model.givens
@@ -1799,7 +1884,7 @@ update msg model =
                     )
                         |> andThen (updateState True)
 
-                Nothing ->
+                ( Nothing, True ) ->
                     ( model
                         |> addLocalMessage
                             True
@@ -1842,7 +1927,10 @@ update msg model =
             )
 
         SolveSelectedCellPressed ->
-            if not (Set.member model.selectedCell model.visibleCells) then
+            if model.solveSelectedCellReceived <= model.solveSelectedCellUsed then
+                ( model, Cmd.none )
+
+            else if not (Set.member model.selectedCell model.visibleCells) then
                 ( addLocalMessage
                     True
                     (String.concat
@@ -1998,7 +2086,7 @@ update msg model =
         ToggleHighlightModePressed ->
             ( { model
                 | highlightMode =
-                    if Set.member "Shift" model.heldKeys then
+                    if Set.member "inputModifier" model.heldKeys then
                         case model.highlightMode of
                             HighlightNone ->
                                 HighlightNumber
@@ -2030,6 +2118,11 @@ update msg model =
             , Cmd.none
             )
                 |> andThen updateBoardData
+
+        ToggleKeybindingsMenuPressed ->
+            ( { model | showKeybindingsMenu = not model.showKeybindingsMenu }
+            , Cmd.none
+            )
 
         TrapDurationChanged value ->
             ( { model
@@ -2442,102 +2535,102 @@ type alias YamlOptions =
     }
 
 
+type BindableAction
+    = ClearBoard
+    | ClearCell
+    | EnterNumber Int
+    | FillBoardCandidates
+    | FillCellCandidates
+    | HoldCandidateMode
+    | MoveDown
+    | MoveLeft
+    | MoveRight
+    | MoveUp
+    | RemoveInvalidCandidates
+    | SelectSingleCandidateCell
+    | SelectSolvableBoard
+    | ToggleCandidateMode
+    | ToggleHighlightMode
+    | Undo
+    | UseRemoveRandomCandidate
+    | UseSolveRandomCell
+    | UseSolveSelectedCell
+    | ZoomIn
+    | ZoomOut
+    | ZoomReset
+
+
+type alias BindableActionData =
+    { defaultCodes : List String
+    , id : String
+    , label : Model -> String
+    , msg : Msg
+    }
+
+
 ---
 -- Encoding/decoding
 ---
 
 
+codeDecoder : Decode.Decoder String
+codeDecoder =
+    Decode.field "code" Decode.string
+        |> Decode.map normalizeCode
+
+
 keyDownDecoder : Model -> Decode.Decoder ( Msg, Bool )
 keyDownDecoder model =
-    Decode.map2 Tuple.pair
-        (Decode.field "code" Decode.string)
-        (Decode.field "key" Decode.string)
-        |> Decode.andThen
-            (\( code, key ) ->
-                let
-                    codeMap : Dict String Msg
-                    codeMap =
-                        [ ( "ArrowUp", MoveSelectionPressed ( -1, 0 ) )
-                        , ( "ArrowDown", MoveSelectionPressed ( 1, 0 ) )
-                        , ( "ArrowLeft", MoveSelectionPressed ( 0, -1 ) )
-                        , ( "ArrowRight", MoveSelectionPressed ( 0, 1 ) )
-                        , ( "Backspace", DeletePressed )
-                        , ( "Delete", DeletePressed )
-                        , ( "Digit1", NumberPressed 1 )
-                        , ( "Digit2", NumberPressed 2 )
-                        , ( "Digit3", NumberPressed 3 )
-                        , ( "Digit4", NumberPressed 4 )
-                        , ( "Digit5", NumberPressed 5 )
-                        , ( "Digit6", NumberPressed 6 )
-                        , ( "Digit7", NumberPressed 7 )
-                        , ( "Digit8", NumberPressed 8 )
-                        , ( "Digit9", NumberPressed 9 )
-                        , ( "Digit0", NumberPressed 10 )
-                        , ( "KeyH", MoveSelectionPressed ( 0, -1 ) )
-                        , ( "KeyJ", MoveSelectionPressed ( 1, 0 ) )
-                        , ( "KeyK", MoveSelectionPressed ( -1, 0 ) )
-                        , ( "KeyL", MoveSelectionPressed ( 0, 1 ) )
-                        , ( "Numpad1", NumberPressed 1 )
-                        , ( "Numpad2", NumberPressed 2 )
-                        , ( "Numpad3", NumberPressed 3 )
-                        , ( "Numpad4", NumberPressed 4 )
-                        , ( "Numpad5", NumberPressed 5 )
-                        , ( "Numpad6", NumberPressed 6 )
-                        , ( "Numpad7", NumberPressed 7 )
-                        , ( "Numpad8", NumberPressed 8 )
-                        , ( "Numpad9", NumberPressed 9 )
-                        , ( "Numpad0", NumberPressed 10 )
-                        , ( "NumpadAdd", ZoomInPressed )
-                        , ( "NumpadSubtract", ZoomOutPressed )
-                        , ( "ShiftLeft", ShiftHeld )
-                        , ( "ShiftRight", ShiftHeld )
-                        , ( "Space", ToggleCandidateModePressed )
-                        , ( "Tab", ToggleHighlightModePressed )
-                        ]
-                            |> Dict.fromList
+    if model.showKeybindingsMenu then
+        Decode.fail "keybindings menu open"
 
-                    keyMap : Dict String Msg
-                    keyMap =
-                        [ ( "A", NumberPressed 11 )
-                        , ( "B", NumberPressed 12 )
-                        , ( "C", NumberPressed 13 )
-                        , ( "D", NumberPressed 14 )
-                        , ( "E", NumberPressed 15 )
-                        , ( "F", NumberPressed 16 )
-                        , ( "G", SelectSolvableBoardPressed )
-                        , ( "Q", FillCellCandidatesPressed )
-                        , ( "W", RemoveInvalidCandidatesPressed )
-                        , ( "S", SelectSingleCandidateCellPressed )
-                        , ( "Z", UndoPressed )
-                        ]
-                            |> Dict.fromList
-                in
-                case ( Dict.get code codeMap, Dict.get (String.toUpper key) keyMap ) of
-                    ( Just msg, _ ) ->
-                        Decode.succeed ( msg, True )
+    else
+        codeDecoder
+            |> Decode.andThen
+                (\code ->
+                    case actionForCode code model.keyBindings of
+                        Just action ->
+                            Decode.succeed ( (bindableActionData action).msg, True )
 
-                    ( _, Just msg ) ->
-                        Decode.succeed ( msg, True )
-
-                    _ ->
-                        Decode.fail code
-            )
+                        Nothing ->
+                            Decode.fail code
+                )
 
 
-keyUpDecoder : Decode.Decoder Msg
-keyUpDecoder =
+keyBindingCaptureDecoder : Model -> Decode.Decoder ( Msg, Bool )
+keyBindingCaptureDecoder model =
+    case model.listeningForBinding of
+        Just _ ->
+            codeDecoder
+                |> Decode.map (\code -> ( KeyBindingCaptured code, True ))
+
+        Nothing ->
+            Decode.fail "not listening for a binding"
+
+
+escapeToCloseDecoder : Decode.Decoder Msg
+escapeToCloseDecoder =
     Decode.field "code" Decode.string
         |> Decode.andThen
             (\code ->
-                case code of
-                    "ShiftLeft" ->
-                        Decode.succeed ShiftReleased
+                if code == "Escape" then
+                    Decode.succeed ToggleKeybindingsMenuPressed
 
-                    "ShiftRight" ->
-                        Decode.succeed ShiftReleased
+                else
+                    Decode.fail code
+            )
 
-                    _ ->
-                        Decode.fail code
+
+keyUpDecoder : Model -> Decode.Decoder Msg
+keyUpDecoder model =
+    codeDecoder
+        |> Decode.andThen
+            (\code ->
+                if actionForCode code model.keyBindings == Just HoldCandidateMode then
+                    Decode.succeed InputModifierReleased
+
+                else
+                    Decode.fail code
             )
 
 
@@ -2546,6 +2639,17 @@ flagsDecoder =
     Decode.map2 Flags
         (Decode.field "localStorage" (Decode.dict Decode.string))
         (Decode.field "seed" Decode.int)
+
+
+keyBindingsToString : Dict String (List String) -> String
+keyBindingsToString bindings =
+    Encode.encode 0 (Encode.dict identity (Encode.list Encode.string) bindings)
+
+
+keyBindingsFromString : String -> Maybe (Dict String (List String))
+keyBindingsFromString string =
+    Decode.decodeString (Decode.dict (Decode.list Decode.string)) string
+        |> Result.toMaybe
 
 
 encodeConnectionHistory : List ConnectionHistoryEntry -> Encode.Value
@@ -3882,6 +3986,16 @@ updateFromLocalStorageValue key value model =
             , Cmd.none
             )
 
+        "apdk-keybindings" ->
+            ( { model
+                | keyBindings =
+                    keyBindingsFromString value
+                        |> Maybe.map mergeSavedKeyBindings
+                        |> Maybe.withDefault model.keyBindings
+              }
+            , Cmd.none
+            )
+
         "apdk-password" ->
             ( { model | password = value }
             , Cmd.none
@@ -4019,7 +4133,7 @@ updateHighlight model =
 
 getCandidateMode : Model -> Bool
 getCandidateMode model =
-    if Set.member "Shift" model.heldKeys then
+    if Set.member "inputModifier" model.heldKeys then
         not model.candidateMode
 
     else
@@ -6483,6 +6597,379 @@ applyYamlOptions opts model =
     }
 
 
+bindableActionData : BindableAction -> BindableActionData
+bindableActionData action =
+    case action of
+        ClearBoard ->
+            { defaultCodes = []
+            , id = "clearBoard"
+            , label = \_ -> "Clear board"
+            , msg = ClearBoardPressed
+            }
+
+        ClearCell ->
+            { defaultCodes = [ "Backspace", "Delete" ]
+            , id = "clearCell"
+            , label = \_ -> "Clear cell"
+            , msg = ClearCellPressed
+            }
+
+        EnterNumber n ->
+            { defaultCodes = defaultNumberCodes n
+            , id = "enterNumber" ++ String.fromInt n
+            , label = \model -> "Input " ++ numberToString { model | emojiTrapTimer = 0 } n
+            , msg = NumberPressed n
+            }
+
+        FillBoardCandidates ->
+            { defaultCodes = []
+            , id = "fillBoardCandidates"
+            , label = \_ -> "Add candidates to board"
+            , msg = FillBoardCandidatesPressed
+            }
+
+        FillCellCandidates ->
+            { defaultCodes = [ "KeyQ" ]
+            , id = "fillCellCandidates"
+            , label = \_ -> "Fill cell candidates"
+            , msg = FillCellCandidatesPressed
+            }
+
+        HoldCandidateMode ->
+            { defaultCodes = [ "Shift" ]
+            , id = "holdCandidateMode"
+            , label = \_ -> "Hold input mode"
+            , msg = InputModifierHeld
+            }
+
+        MoveDown ->
+            { defaultCodes = [ "ArrowDown", "KeyJ" ]
+            , id = "moveDown"
+            , label = \_ -> "Move down"
+            , msg = MoveSelectionPressed ( 1, 0 )
+            }
+
+        MoveLeft ->
+            { defaultCodes = [ "ArrowLeft", "KeyH" ]
+            , id = "moveLeft"
+            , label = \_ -> "Move left"
+            , msg = MoveSelectionPressed ( 0, -1 )
+            }
+
+        MoveRight ->
+            { defaultCodes = [ "ArrowRight", "KeyL" ]
+            , id = "moveRight"
+            , label = \_ -> "Move right"
+            , msg = MoveSelectionPressed ( 0, 1 )
+            }
+
+        MoveUp ->
+            { defaultCodes = [ "ArrowUp", "KeyK" ]
+            , id = "moveUp"
+            , label = \_ -> "Move up"
+            , msg = MoveSelectionPressed ( -1, 0 )
+            }
+
+        RemoveInvalidCandidates ->
+            { defaultCodes = [ "KeyW" ]
+            , id = "removeInvalidCandidates"
+            , label = \_ -> "Remove invalid candidates"
+            , msg = RemoveInvalidCandidatesPressed
+            }
+
+        SelectSingleCandidateCell ->
+            { defaultCodes = [ "KeyS" ]
+            , id = "selectSingleCandidateCell"
+            , label = \_ -> "Select single-candidate cell"
+            , msg = SelectSingleCandidateCellPressed
+            }
+
+        SelectSolvableBoard ->
+            { defaultCodes = [ "KeyG" ]
+            , id = "selectSolvableBoard"
+            , label = \_ -> "Select solvable board"
+            , msg = SelectSolvableBoardPressed
+            }
+
+        ToggleCandidateMode ->
+            { defaultCodes = [ "Space" ]
+            , id = "toggleCandidateMode"
+            , label = \_ -> "Toggle input mode"
+            , msg = ToggleCandidateModePressed
+            }
+
+        ToggleHighlightMode ->
+            { defaultCodes = [ "Tab" ]
+            , id = "toggleHighlightMode"
+            , label = \_ -> "Toggle highlight mode"
+            , msg = ToggleHighlightModePressed
+            }
+
+        Undo ->
+            { defaultCodes = [ "KeyZ" ]
+            , id = "undo"
+            , label = \_ -> "Undo"
+            , msg = UndoPressed
+            }
+
+        UseRemoveRandomCandidate ->
+            { defaultCodes = []
+            , id = "removeRandomCandidate"
+            , label = \_ -> "Remove random candidate"
+            , msg = RemoveRandomCandidatePressed
+            }
+
+        UseSolveRandomCell ->
+            { defaultCodes = []
+            , id = "solveRandomCell"
+            , label = \_ -> "Solve random cell"
+            , msg = SolveRandomCellPressed
+            }
+
+        UseSolveSelectedCell ->
+            { defaultCodes = []
+            , id = "solveSelectedCell"
+            , label = \_ -> "Solve selected cell"
+            , msg = SolveSelectedCellPressed
+            }
+
+        ZoomIn ->
+            { defaultCodes = [ "NumpadAdd" ]
+            , id = "zoomIn"
+            , label = \_ -> "Zoom in"
+            , msg = ZoomInPressed
+            }
+
+        ZoomOut ->
+            { defaultCodes = [ "NumpadSubtract" ]
+            , id = "zoomOut"
+            , label = \_ -> "Zoom out"
+            , msg = ZoomOutPressed
+            }
+
+        ZoomReset ->
+            { defaultCodes = []
+            , id = "zoomReset"
+            , label = \_ -> "Zoom reset"
+            , msg = ZoomResetPressed
+            }
+
+
+defaultNumberCodes : Int -> List String
+defaultNumberCodes n =
+    case n of
+        10 ->
+            [ "Digit0", "Numpad0" ]
+
+        11 ->
+            [ "KeyA" ]
+
+        12 ->
+            [ "KeyB" ]
+
+        13 ->
+            [ "KeyC" ]
+
+        14 ->
+            [ "KeyD" ]
+
+        15 ->
+            [ "KeyE" ]
+
+        16 ->
+            [ "KeyF" ]
+
+        _ ->
+            if n >= 1 && n <= 9 then
+                [ "Digit" ++ String.fromInt n, "Numpad" ++ String.fromInt n ]
+
+            else
+                []
+
+
+allBindableActions : List BindableAction
+allBindableActions =
+    [ MoveUp
+    , MoveDown
+    , MoveLeft
+    , MoveRight
+    , ClearCell
+    , ZoomIn
+    , ZoomOut
+    , ZoomReset
+    , HoldCandidateMode
+    , ToggleCandidateMode
+    , ToggleHighlightMode
+    , Undo
+    , SelectSingleCandidateCell
+    , SelectSolvableBoard
+    , RemoveInvalidCandidates
+    , FillCellCandidates
+    , FillBoardCandidates
+    , ClearBoard
+    , UseSolveSelectedCell
+    , UseSolveRandomCell
+    , UseRemoveRandomCandidate
+    ]
+        ++ List.map EnterNumber (List.range 1 16)
+
+
+defaultKeyBindings : Dict String (List String)
+defaultKeyBindings =
+    allBindableActions
+        |> List.map
+            (\action ->
+                let
+                    data : BindableActionData
+                    data =
+                        bindableActionData action
+                in
+                ( data.id, data.defaultCodes )
+            )
+        |> Dict.fromList
+
+
+codesForAction : BindableAction -> Dict String (List String) -> List String
+codesForAction action bindings =
+    Dict.get (bindableActionData action).id bindings
+        |> Maybe.withDefault []
+
+
+normalizeCode : String -> String
+normalizeCode code =
+    case code of
+        "ShiftLeft" ->
+            "Shift"
+
+        "ShiftRight" ->
+            "Shift"
+
+        "ControlLeft" ->
+            "Control"
+
+        "ControlRight" ->
+            "Control"
+
+        "AltLeft" ->
+            "Alt"
+
+        "AltRight" ->
+            "Alt"
+
+        _ ->
+            code
+
+
+codeToChar : Dict String String -> String -> Maybe String
+codeToChar layout code =
+    Dict.get code layout
+        |> Maybe.map String.toUpper
+
+
+stripCode : String -> String
+stripCode code =
+    code
+        |> String.replace "Key" ""
+        |> String.replace "Digit" ""
+        |> String.replace "Numpad" ""
+
+
+menuCode : Model -> String -> String
+menuCode model code =
+    codeToChar model.keyboardLayout code
+        |> Maybe.withDefault code
+
+
+keyLabel : Model -> BindableAction -> String
+keyLabel model action =
+    case List.head (codesForAction action model.keyBindings) of
+        Just code ->
+            "[" ++ (codeToChar model.keyboardLayout code |> Maybe.withDefault (stripCode code)) ++ "]"
+
+        Nothing ->
+            ""
+
+
+keyHint : Model -> BindableAction -> String
+keyHint model action =
+    let
+        label : String
+        label =
+            keyLabel model action
+    in
+    if String.isEmpty label then
+        ""
+
+    else
+        " " ++ label
+
+
+actionForCode : String -> Dict String (List String) -> Maybe BindableAction
+actionForCode code bindings =
+    List.Extra.find
+        (\action -> List.member code (codesForAction action bindings))
+        allBindableActions
+
+
+bindingSlots : BindableAction -> Dict String (List String) -> List (Maybe String)
+bindingSlots action bindings =
+    let
+        codes : List String
+        codes =
+            codesForAction action bindings
+    in
+    [ List.Extra.getAt 0 codes
+    , List.Extra.getAt 1 codes
+    ]
+
+
+setBindingSlot : BindableAction -> Int -> String -> Dict String (List String) -> Dict String (List String)
+setBindingSlot action slotIndex code bindings =
+    let
+        newCodes : List String
+        newCodes =
+            bindingSlots action bindings
+                |> List.Extra.setAt slotIndex (Just code)
+                |> List.filterMap identity
+                |> List.Extra.unique
+    in
+    bindings
+        |> Dict.map (\_ codes -> List.filter ((/=) code) codes)
+        |> Dict.insert (bindableActionData action).id newCodes
+
+
+clearBindingSlot : BindableAction -> Int -> Dict String (List String) -> Dict String (List String)
+clearBindingSlot action slotIndex bindings =
+    Dict.insert
+        (bindableActionData action).id
+        (List.Extra.removeAt slotIndex (codesForAction action bindings))
+        bindings
+
+
+mergeSavedKeyBindings : Dict String (List String) -> Dict String (List String)
+mergeSavedKeyBindings saved =
+    let
+        usedCodes : Set String
+        usedCodes =
+            saved
+                |> Dict.values
+                |> List.concat
+                |> Set.fromList
+    in
+    Dict.foldl
+        (\id defaultCodes acc ->
+            if Dict.member id saved then
+                acc
+
+            else
+                Dict.insert id
+                    (List.filter (\code -> not (Set.member code usedCodes)) defaultCodes)
+                    acc
+        )
+        saved
+        defaultKeyBindings
+
+
 
 ---
 -- View functions
@@ -6550,6 +7037,7 @@ view model =
                 ]
                 [ viewBoard model
                 , viewInfoPanel model
+                , Html.Extra.viewIf model.showKeybindingsMenu (viewKeybindingsOverlay model)
                 , viewColorScheme model
                 ]
 
@@ -7750,7 +8238,7 @@ viewBoard model =
         [ Html.node "archipeladoku-board"
             [ HA.property "data" model.boardData
             , HE.preventDefaultOn "keydown" (keyDownDecoder model)
-            , HE.on "keyup" keyUpDecoder
+            , HE.on "keyup" (keyUpDecoder model)
             , HE.on "cellselected" cellSelectedDecoder
             , HA.tabindex 0
             ]
@@ -7922,7 +8410,7 @@ viewInfoPanelInput model =
                         (List.range 1 model.blockSize)
                     )
                     [ Html.button
-                        [ HE.onClick DeletePressed
+                        [ HE.onClick ClearCellPressed
                         , HA.class "cell"
                         , HA.style "font-size" "1.5em"
                         , HA.style "width" "1.5em"
@@ -7934,7 +8422,14 @@ viewInfoPanelInput model =
             , Html.label
                 [ HA.class "column gap-s"
                 ]
-                [ Html.text "Input mode (Toggle [Space], Hold [Shift])"
+                [ Html.text
+                    (String.concat
+                        [ "Input mode"
+                        , keyHint model ToggleCandidateMode
+                        , ","
+                        , keyHint model HoldCandidateMode
+                        ]
+                    )
                 , Html.div
                     [ HA.class "row gap-m"
                     ]
@@ -7954,7 +8449,16 @@ viewInfoPanelInput model =
                 ]
             , Html.div
                 [ HA.class "col gap-s" ]
-                [ Html.text "Highlight mode [Tab]"
+                [ Html.text
+                    (String.concat
+                        [ "Highlight mode"
+                        , keyHint model ToggleHighlightMode
+                        , ", "
+                        , keyLabel model HoldCandidateMode
+                        , "+"
+                        , keyLabel model ToggleHighlightMode
+                        ]
+                    )
                 , Html.div
                     [ HA.class "row gap-m"
                     ]
@@ -8090,7 +8594,7 @@ viewInfoPanelHelpers model =
                     , HE.onClick UndoPressed
                     ]
                     [ Html.text "Undo" ]
-                , Html.text "[Z]"
+                , Html.text (keyHint model Undo)
                 ]
             , Html.div
                 [ HA.class "row gap-m"
@@ -8101,7 +8605,7 @@ viewInfoPanelHelpers model =
                     , HE.onClick SelectSingleCandidateCellPressed
                     ]
                     [ Html.text "Select single-candidate cell" ]
-                , Html.text "[S]"
+                , Html.text (keyHint model SelectSingleCandidateCell)
                 ]
             , Html.div
                 [ HA.class "row gap-m"
@@ -8113,7 +8617,7 @@ viewInfoPanelHelpers model =
                     ]
                     [ Html.text "Select solvable board"
                     ]
-                , Html.text "[G]"
+                , Html.text (keyHint model SelectSolvableBoard)
                 ]
             , Html.div
                 [ HA.class "row gap-m"
@@ -8124,7 +8628,7 @@ viewInfoPanelHelpers model =
                     , HE.onClick RemoveInvalidCandidatesPressed
                     ]
                     [ Html.text "Remove all invalid candidates" ]
-                , Html.text "[W]"
+                , Html.text (keyHint model RemoveInvalidCandidates)
                 , Html.label
                     [ HA.class "row gap-s"
                     , HA.style "align-items" "center"
@@ -8147,7 +8651,7 @@ viewInfoPanelHelpers model =
                     , HE.onClick FillCellCandidatesPressed
                     ]
                     [ Html.text "Add candidates to cell" ]
-                , Html.text "[Q]"
+                , Html.text (keyHint model FillCellCandidates)
                 , Html.label
                     [ HA.class "row gap-s"
                     , HA.style "align-items" "center"
@@ -8163,21 +8667,25 @@ viewInfoPanelHelpers model =
                 ]
             , Html.div
                 [ HA.class "row gap-m"
+                , HA.style "align-items" "center"
                 ]
                 [ Html.button
                     [ HA.class "button"
                     , HE.onClick FillBoardCandidatesPressed
                     ]
                     [ Html.text "Add candidates to board" ]
+                , Html.text (keyHint model FillBoardCandidates)
                 ]
             , Html.div
                 [ HA.class "row gap-m"
+                , HA.style "align-items" "center"
                 ]
                 [ Html.button
                     [ HA.class "button"
                     , HE.onClick ClearBoardPressed
                     ]
                     [ Html.text "Clear board" ]
+                , Html.text (keyHint model ClearBoard)
                 ]
             , if model.gameIsLocal then
                 Html.text ""
@@ -8221,50 +8729,68 @@ viewInfoPanelItems model =
             [ HA.class "row gap-m"
             , HA.style "flex-wrap" "wrap"
             ]
-            [ Html.button
-                [ HA.class "button"
-                , HAE.attributeIf
-                    (model.solveSelectedCellReceived > model.solveSelectedCellUsed)
-                    (HE.onClick SolveSelectedCellPressed)
-                , HA.disabled (model.solveSelectedCellReceived <= model.solveSelectedCellUsed)
+            [ Html.div
+                [ HA.class "row gap-m"
+                , HA.style "align-items" "center"
                 ]
-                [ Html.text
-                    (String.concat
-                        [ "Solve Selected Cell ("
-                        , String.fromInt (model.solveSelectedCellReceived - model.solveSelectedCellUsed)
-                        , " uses)"
-                        ]
-                    )
+                [ Html.button
+                    [ HA.class "button"
+                    , HAE.attributeIf
+                        (model.solveSelectedCellReceived > model.solveSelectedCellUsed)
+                        (HE.onClick SolveSelectedCellPressed)
+                    , HA.disabled (model.solveSelectedCellReceived <= model.solveSelectedCellUsed)
+                    ]
+                    [ Html.text
+                        (String.concat
+                            [ "Solve Selected Cell ("
+                            , String.fromInt (model.solveSelectedCellReceived - model.solveSelectedCellUsed)
+                            , " uses)"
+                            ]
+                        )
+                    ]
+                , Html.text (keyHint model UseSolveSelectedCell)
                 ]
-            , Html.button
-                [ HA.class "button"
-                , HAE.attributeIf
-                    (model.solveRandomCellReceived > model.solveRandomCellUsed)
-                    (HE.onClick SolveRandomCellPressed)
-                , HA.disabled (model.solveRandomCellReceived <= model.solveRandomCellUsed)
+            , Html.div
+                [ HA.class "row gap-m"
+                , HA.style "align-items" "center"
                 ]
-                [ Html.text
-                    (String.concat
-                        [ "Solve Random Cell ("
-                        , String.fromInt (model.solveRandomCellReceived - model.solveRandomCellUsed)
-                        , " uses)"
-                        ]
-                    )
+                [ Html.button
+                    [ HA.class "button"
+                    , HAE.attributeIf
+                        (model.solveRandomCellReceived > model.solveRandomCellUsed)
+                        (HE.onClick SolveRandomCellPressed)
+                    , HA.disabled (model.solveRandomCellReceived <= model.solveRandomCellUsed)
+                    ]
+                    [ Html.text
+                        (String.concat
+                            [ "Solve Random Cell ("
+                            , String.fromInt (model.solveRandomCellReceived - model.solveRandomCellUsed)
+                            , " uses)"
+                            ]
+                        )
+                    ]
+                , Html.text (keyHint model UseSolveRandomCell)
                 ]
-            , Html.button
-                [ HA.class "button"
-                , HAE.attributeIf
-                    (model.removeRandomCandidateReceived > model.removeRandomCandidateUsed)
-                    (HE.onClick RemoveRandomCandidatePressed)
-                , HA.disabled (model.removeRandomCandidateReceived <= model.removeRandomCandidateUsed)
+            , Html.div
+                [ HA.class "row gap-m"
+                , HA.style "align-items" "center"
                 ]
-                [ Html.text
-                    (String.concat
-                        [ "Remove Random Candidate ("
-                        , String.fromInt (model.removeRandomCandidateReceived - model.removeRandomCandidateUsed)
-                        , " uses)"
-                        ]
-                    )
+                [ Html.button
+                    [ HA.class "button"
+                    , HAE.attributeIf
+                        (model.removeRandomCandidateReceived > model.removeRandomCandidateUsed)
+                        (HE.onClick RemoveRandomCandidatePressed)
+                    , HA.disabled (model.removeRandomCandidateReceived <= model.removeRandomCandidateUsed)
+                    ]
+                    [ Html.text
+                        (String.concat
+                            [ "Remove Random Candidate ("
+                            , String.fromInt (model.removeRandomCandidateReceived - model.removeRandomCandidateUsed)
+                            , " uses)"
+                            ]
+                        )
+                    ]
+                , Html.text (keyHint model UseRemoveRandomCandidate)
                 ]
             ]
         ]
@@ -8420,6 +8946,11 @@ viewInfoPanelSettings model =
                         [ Html.text "Random" ]
                     ]
                 ]
+            , Html.button
+                [ HA.class "button"
+                , HE.onClick ToggleKeybindingsMenuPressed
+                ]
+                [ Html.text "Configure keybindings" ]
             ]
         ]
 
@@ -8869,4 +9400,83 @@ viewDisconnectedOverlay model =
                 ]
                 [ Html.text "Reconnect" ]
             ]
+        ]
+
+
+viewKeybindingsOverlay : Model -> Html Msg
+viewKeybindingsOverlay model =
+    Html.div
+        [ HA.class "overlay"
+        , HE.preventDefaultOn "keydown" (keyBindingCaptureDecoder model)
+        , HE.onClick ToggleKeybindingsMenuPressed
+        ]
+        [ Html.div
+            [ HA.class "main-menu-panel keybindings-panel"
+            , HE.stopPropagationOn "click" (Decode.succeed ( NoOp, True ))
+            ]
+            [ Html.h2
+                []
+                [ Html.text "Keybindings" ]
+            , Html.p
+                [ HA.class "keybindings-instructions"
+                ]
+                [ Html.text "Click a slot, then press a key to bind it. Click the slot again to clear it, or press Escape to cancel." ]
+            , Html.div
+                [ HA.class "keybindings-list"
+                ]
+                (List.concatMap (viewKeybindingRow model) allBindableActions)
+            , Html.div
+                [ HA.class "row gap-m"
+                , HA.style "justify-content" "space-between"
+                ]
+                [ Html.button
+                    [ HA.class "button"
+                    , HE.onClick ResetKeybindingsPressed
+                    ]
+                    [ Html.text "Reset to defaults" ]
+                , Html.button
+                    [ HA.class "button"
+                    , HE.onClick ToggleKeybindingsMenuPressed
+                    ]
+                    [ Html.text "Close" ]
+                ]
+            ]
+        ]
+
+
+viewKeybindingRow : Model -> BindableAction -> List (Html Msg)
+viewKeybindingRow model action =
+    List.append
+        [ Html.span
+            [ HA.class "keybindings-label"
+            ]
+            [ Html.text ((bindableActionData action).label model) ]
+        ]
+        (List.indexedMap
+            (viewKeybindingSlot model action)
+            (bindingSlots action model.keyBindings)
+        )
+
+
+viewKeybindingSlot : Model -> BindableAction -> Int -> Maybe String -> Html Msg
+viewKeybindingSlot model action slotIndex slot =
+    let
+        isListening : Bool
+        isListening =
+            model.listeningForBinding == Just ( action, slotIndex )
+    in
+    Html.button
+        [ HA.class "button keybinding-key"
+        , HA.classList [ ( "keybinding-key-listening", isListening ) ]
+        , HE.onClick (RebindSlotPressed action slotIndex)
+        ]
+        [ Html.text
+            (if isListening then
+                "Press a key…"
+
+             else
+                slot
+                    |> Maybe.map (menuCode model)
+                    |> Maybe.withDefault "—"
+            )
         ]
