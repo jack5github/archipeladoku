@@ -233,6 +233,16 @@ window.triggerAnimation = triggerAnimation
 
 app.ports.triggerAnimation?.subscribe(triggerAnimation)
 
+app.ports.triggerFirework?.subscribe(() => {
+    const viewport = document.querySelector('archipeladoku-board')
+
+    if (!viewport) {
+        return
+    }
+
+    viewport.queueFirework()
+})
+
 app.ports.zoom?.subscribe(data => {
     const { id, scaleMult } = data
     const viewport = document.querySelector('archipeladoku-board')

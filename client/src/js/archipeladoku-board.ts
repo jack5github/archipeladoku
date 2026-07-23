@@ -582,6 +582,8 @@ class ArchipeladokuBoard extends HTMLElement {
     fireworkParticles: Map<number, FireworkParticle> = new Map()
     fireworks: boolean = false
     lastFireworkFadeTime: number = 0
+    queuedNothingFireworks: number = 0
+    drainingNothingFireworks: boolean = false
     animationsEnabled: boolean = true
     candidateLayout: number = 0
     numberAppearProgress: Map<string, number> = new Map()
@@ -1420,6 +1422,41 @@ class ArchipeladokuBoard extends HTMLElement {
             onUpdate: (progress: number) => {},
             onComplete: () => {
                 this.startFireworksTimer()
+            },
+        })
+    }
+
+
+    queueFirework() {
+        if (!this.animationsEnabled) {
+            return
+        }
+
+        this.queuedNothingFireworks = Math.min(this.queuedNothingFireworks + 1, 6)
+
+        if (!this.drainingNothingFireworks) {
+            this.drainNothingFireworkQueue()
+        }
+    }
+
+
+    drainNothingFireworkQueue() {
+        if (this.queuedNothingFireworks <= 0) {
+            this.drainingNothingFireworks = false
+            return
+        }
+
+        this.drainingNothingFireworks = true
+        this.queuedNothingFireworks -= 1
+        this.startFireworkAnimation()
+
+        this.addAnimation({
+            id: 'nothing-firework-queue',
+            startTime: performance.now(),
+            duration: 200 + Math.random() * 200,
+            onUpdate: (progress: number) => {},
+            onComplete: () => {
+                this.drainNothingFireworkQueue()
             },
         })
     }

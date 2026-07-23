@@ -50,6 +50,7 @@ port sendPlayingStatus : () -> Cmd msg
 port setDeathLink : Bool -> Cmd msg
 port setLocalStorage : (String, String) -> Cmd msg
 port triggerAnimation : Encode.Value -> Cmd msg
+port triggerFirework : () -> Cmd msg
 port zoom : Encode.Value -> Cmd msg
 port zoomReset : () -> Cmd msg
 
@@ -114,6 +115,7 @@ type alias Model =
     , emojiTrapTriggers : Int
     , emojiTrapVariant : EmojiTrapVariant
     , errors : Dict ( Int, Int ) CellError
+    , fireworkOnNothing : Bool
     , fireworksTimer : Int
     , generationProgress : ( String, Float )
     , gameIsLocal : Bool
@@ -230,6 +232,7 @@ type Msg
     | EnableDeathLinkChanged Bool
     | FillBoardCandidatesPressed
     | FillCellCandidatesPressed
+    | FireworkOnNothingChanged Bool
     | GenerateYamlPressed
     | GotCheckedLocations (List Int)
     | GotConnectionStatus Bool
@@ -381,6 +384,7 @@ init flagsValue =
       , emojiTrapTriggers = 0
       , emojiTrapVariant = EmojiTrapRandom
       , errors = Dict.empty
+      , fireworkOnNothing = True
       , fireworksTimer = 0
       , generationProgress = ( "Initializing", 0 )
       , gameIsLocal = False
@@ -936,6 +940,11 @@ update msg model =
                 ( model
                 , Cmd.none
                 )
+
+        FireworkOnNothingChanged value ->
+            ( { model | fireworkOnNothing = value }
+            , setLocalStorage ( "apdk-firework-on-nothing", if value then "1" else "0" )
+            )
 
         GenerateYamlPressed ->
             ( model
@@ -3981,6 +3990,11 @@ updateFromLocalStorageValue key value model =
             , Cmd.none
             )
 
+        "apdk-firework-on-nothing" ->
+            ( { model | fireworkOnNothing = value == "1" }
+            , Cmd.none
+            )
+
         "apdk-host" ->
             ( { model | host = value }
             , Cmd.none
@@ -4315,12 +4329,12 @@ updateStateApplyServerChecks model =
         )
 
 
-updateStateItems : Model -> ( Model, Cmd Msg )
-updateStateItems model =
+updateStateItems : Bool -> Model -> ( Model, Cmd Msg )
+updateStateItems triggerAnimations model =
     ( { model | pendingItems = [] }
     , Cmd.none
     )
-        |> applyList updateStateItem model.pendingItems
+        |> applyList (updateStateItem triggerAnimations) model.pendingItems
 
 
 updateStateChanges : Bool -> Model -> ( Model, Cmd Msg )
@@ -4343,7 +4357,7 @@ updateStateChangesLoop triggerAnimations ( model, cmd ) =
         let
             ( newModel, newCmd ) =
                 applySteps
-                    [ updateStateItems
+                    [ updateStateItems triggerAnimations
                     , updateStateCellChanges
                     , updateStateSolvedAreas triggerAnimations
                     , updateStateCheckLocations
@@ -4917,8 +4931,8 @@ getBoardErrors model =
         )
 
 
-updateStateItem : Item -> Model -> ( Model, Cmd Msg )
-updateStateItem item model =
+updateStateItem : Bool -> Item -> Model -> ( Model, Cmd Msg )
+updateStateItem triggerAnimations item model =
     case item of
         ProgressiveBlock ->
             applyList
@@ -4976,7 +4990,11 @@ updateStateItem item model =
 
         NothingItem ->
             ( model
-            , Cmd.none
+            , if triggerAnimations && model.animationsEnabled && model.fireworkOnNothing then
+                triggerFirework ()
+
+              else
+                Cmd.none
             )
 
 
@@ -8860,6 +8878,18 @@ viewInfoPanelSettings model =
                     ]
                     []
                 , Html.text "Enable animations"
+                ]
+            , Html.label
+                [ HA.class "row gap-s"
+                , HA.style "align-items" "center"
+                ]
+                [ Html.input
+                    [ HA.type_ "checkbox"
+                    , HA.checked model.fireworkOnNothing
+                    , HE.onCheck FireworkOnNothingChanged
+                    ]
+                    []
+                , Html.text "Launch a firework when receiving a Nothing"
                 ]
             , Html.label
                 [ HA.class "row gap-s"
