@@ -209,6 +209,7 @@ type Msg
     | CellSelected ( Int, Int )
     | ClearBoardPressed
     | ClearCellPressed
+    | ClearConnectionHistoryPressed
     | ColorSchemeChanged String
     | ConnectionHistoryQuickFillPressed ConnectionHistoryEntry
     | ConnectPressed
@@ -627,6 +628,11 @@ update msg model =
                 ( model
                 , Cmd.none
                 )
+
+        ClearConnectionHistoryPressed ->
+            ( { model | connectionHistory = [] }
+            , setLocalStorage ( "apdk-connection-history", "[]" )
+            )
 
         ColorSchemeChanged scheme ->
             ( { model | colorScheme = scheme }
@@ -7180,15 +7186,24 @@ viewMenuConnect model =
                 , Html.div
                     [ HA.class "row gap-s wrap"
                     ]
-                    (List.map
-                        (\entry ->
-                            Html.button
-                                [ HA.class "button"
-                                , HE.onClick (ConnectionHistoryQuickFillPressed entry)
-                                ]
-                                [ Html.text (entry.player ++ "@" ++ entry.host) ]
+                    (List.append
+                        (List.map
+                            (\entry ->
+                                Html.button
+                                    [ HA.class "button"
+                                    , HE.onClick (ConnectionHistoryQuickFillPressed entry)
+                                    ]
+                                    [ Html.text (entry.player ++ "@" ++ entry.host) ]
+                            )
+                            model.connectionHistory
                         )
-                        model.connectionHistory
+                        [ Html.button
+                            [ HA.class "button"
+                            , HA.style "margin-left" "auto"
+                            , HE.onClick ClearConnectionHistoryPressed
+                            ]
+                            [ Html.text "Clear History" ]
+                        ]
                     )
                 ]
         ]
