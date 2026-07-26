@@ -423,6 +423,30 @@ h1, h2, h3, p {
     background-color: var(--color-button-bg-disabled);
 }
 
+.button-flash {
+    position: relative;
+    margin-right: calc(var(--spacing-m) + 1.25em);
+}
+
+.button-flash::after {
+    content: "✓" / "";
+    position: absolute;
+    left: calc(100% + var(--spacing-m));
+    top: 50%;
+    translate: 0 -50%;
+    font-size: 1.25em;
+    line-height: 1;
+    color: var(--color-text);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1s ease-out 0.5s;
+}
+
+.button-flash:active:not(:disabled)::after {
+    opacity: 1;
+    transition: none;
+}
+
 .input {
     font: inherit;
     color: var(--color-text);

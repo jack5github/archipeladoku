@@ -37,6 +37,8 @@ import Yaml.Encode
 port centerViewOnCell : ( Int, Int ) -> Cmd msg
 port checkLocation : Int -> Cmd msg
 port checkLocations : List Int -> Cmd msg
+port clearLocalStorage : () -> Cmd msg
+port clearSavedGames : () -> Cmd msg
 port connect : Encode.Value -> Cmd msg
 port generateBoard : Encode.Value -> Cmd msg
 port goal : () -> Cmd msg
@@ -210,6 +212,7 @@ type Msg
     | ClearBoardPressed
     | ClearCellPressed
     | ClearConnectionHistoryPressed
+    | ClearSavedGamesPressed
     | ColorSchemeChanged String
     | ConnectionHistoryQuickFillPressed ConnectionHistoryEntry
     | ConnectPressed
@@ -286,6 +289,7 @@ type Msg
     | RemoveRandomCandidateRatioChanged Int
     | RemoveRandomCandidateRatioInputBlurred
     | RemoveRandomCandidateRatioInputChanged String
+    | ResetClientSettingsPressed
     | ResetKeybindingsPressed
     | ResumeLocalGamePressed SavedGame
     | ScoutLocationPressed Int
@@ -632,6 +636,11 @@ update msg model =
         ClearConnectionHistoryPressed ->
             ( { model | connectionHistory = [] }
             , setLocalStorage ( "apdk-connection-history", "[]" )
+            )
+
+        ClearSavedGamesPressed ->
+            ( { model | localGameSave = Nothing }
+            , clearSavedGames ()
             )
 
         ColorSchemeChanged scheme ->
@@ -1656,6 +1665,29 @@ update msg model =
                 , removeRandomCandidateRatioInput = value
               }
             , Cmd.none
+            )
+
+        ResetClientSettingsPressed ->
+            let
+                -- Take the defaults from init to keep them defined in one place.
+                defaults : Model
+                defaults =
+                    Tuple.first (init Encode.null)
+            in
+            ( { model
+                | animationsEnabled = defaults.animationsEnabled
+                , autoFillCandidatesOnUnlock = defaults.autoFillCandidatesOnUnlock
+                , autoRemoveInvalidCandidates = defaults.autoRemoveInvalidCandidates
+                , candidateLayout = defaults.candidateLayout
+                , colorScheme = defaults.colorScheme
+                , emojiTrapVariant = defaults.emojiTrapVariant
+                , fireworkOnNothing = defaults.fireworkOnNothing
+                , keyBindings = defaults.keyBindings
+                , showInputErrors = defaults.showInputErrors
+                , showToastMessages = defaults.showToastMessages
+                , trapDuration = defaults.trapDuration
+              }
+            , clearLocalStorage ()
             )
 
         ResetKeybindingsPressed ->
@@ -7107,6 +7139,7 @@ viewMenu model =
         , viewMenuResume model
         , viewMenuOptions model
         , viewMenuAbout
+        , viewMenuUtilities
         , Html.div
             [ HA.style "align-self" "center"
             , HA.style "color" "var(--text-color)"
@@ -8350,6 +8383,30 @@ viewMenuAbout =
                     , Html.text "."
                     ]
                 ]
+            ]
+        ]
+
+
+viewMenuUtilities : Html Msg
+viewMenuUtilities =
+    Html.div
+        [ HA.class "main-menu-panel" ]
+        [ Html.h2
+            []
+            [ Html.text "Utilities" ]
+        , Html.div
+            [ HA.class "row gap-m"
+            ]
+            [ Html.button
+                [ HA.class "button button-flash"
+                , HE.onClick ClearSavedGamesPressed
+                ]
+                [ Html.text "Clear saved game data" ]
+            , Html.button
+                [ HA.class "button button-flash"
+                , HE.onClick ResetClientSettingsPressed
+                ]
+                [ Html.text "Reset client settings" ]
             ]
         ]
 

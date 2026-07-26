@@ -94,6 +94,20 @@ app.ports.centerViewOnCell?.subscribe(cell => {
     viewport.centerOnCell(row, col)
 })
 
+app.ports.clearLocalStorage?.subscribe(() => {
+    const keysToKeep = [ 'apdk-connection-history', 'apdk-host', 'apdk-password', 'apdk-player' ]
+
+    for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('apdk-') && !keysToKeep.includes(key)) {
+            localStorage.removeItem(key)
+        }
+    }
+})
+
+app.ports.clearSavedGames?.subscribe(() => {
+    IDB.clear(store)
+})
+
 app.ports.connect?.subscribe(data => {
     client.login(data.host, data.player, 'Archipeladoku', { password: data.password })
         .then(slotData => {
