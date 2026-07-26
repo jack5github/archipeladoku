@@ -15,6 +15,7 @@ let app = Elm.Archipeladoku.init({
     flags: {
         seed: Math.floor(Math.random() * 2147483647),
         localStorage: { ...localStorage },
+        version: import.meta.env.VITE_APP_VERSION ?? 'dev',
     }
 })
 window.app = app // For debugging purposes

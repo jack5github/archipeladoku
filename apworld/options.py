@@ -4,7 +4,9 @@ from Options import OptionGroup
 
 
 class BlockSize(Options.Choice):
-    """The size of a single block (and the width/height of each board)."""
+    """The size of a single block (and the width/height of each board). A standard Sudoku is 9.
+    Smaller sizes are easier, larger sizes are more difficult.
+    """
     display_name = "Block Size"
     option_4 = 4
     option_6 = 6

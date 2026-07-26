@@ -192,6 +192,7 @@ type alias Model =
     , undoStack : List (Dict ( Int, Int ) CellValue)
     , unlockedBlocks : Set ( Int, Int )
     , unlockMap : Dict Int Item
+    , version : String
     , visibleCells : Set ( Int, Int )
     }
 
@@ -466,6 +467,7 @@ init flagsValue =
       , undoStack = []
       , unlockedBlocks = Set.empty
       , unlockMap = Dict.empty
+      , version = flags.version
       , visibleCells = Set.empty
       }
     , Task.perform GotTimezone Time.here
@@ -2265,6 +2267,7 @@ update msg model =
 type alias Flags =
     { localStorage : Dict String String
     , seed : Int
+    , version : String
     }
 
 
@@ -2272,6 +2275,7 @@ defaultFlags : Flags
 defaultFlags =
     { localStorage = Dict.empty
     , seed = 1
+    , version = ""
     }
 
 
@@ -2645,9 +2649,10 @@ keyUpDecoder model =
 
 flagsDecoder : Decode.Decoder Flags
 flagsDecoder =
-    Decode.map2 Flags
+    Decode.map3 Flags
         (Decode.field "localStorage" (Decode.dict Decode.string))
         (Decode.field "seed" Decode.int)
+        (Decode.field "version" Decode.string)
 
 
 keyBindingsToString : Dict String (List String) -> String
@@ -7095,6 +7100,15 @@ viewMenu model =
         , viewMenuConnect model
         , viewMenuResume model
         , viewMenuOptions model
+        , viewMenuAbout
+        , Html.div
+            [ HA.style "align-self" "center"
+            , HA.style "color" "var(--text-color)"
+            , HA.style "opacity" "0.8"
+            ]
+            [ Html.text "Client version: "
+            , Html.text (String.left 8 model.version)
+            ]
         ]
 
 
@@ -7325,7 +7339,7 @@ viewMenuOptionsBoard model =
                     [ Html.text "Block Size:"
                     , viewOptionHint
                         "block-size-hint"
-                        "The size of each block, and the width/height of each board. A standard Sudoku is 9."
+                        "The size of each block, and the width/height of each board. A standard Sudoku is 9. Smaller sizes are easier, larger sizes are more difficult."
                     ]
                 , Html.div
                     [ HA.class "row gap-m wrap"
@@ -8244,6 +8258,83 @@ viewRatioInputs args =
                 500
                 args.onRangeChange
                 (Just "filler-ratio-ticks")
+            ]
+        ]
+
+
+viewMenuAbout : Html Msg
+viewMenuAbout =
+    Html.div
+        [ HA.class "main-menu-panel" ]
+        [ Html.h2
+            []
+            [ Html.text "About / FAQ" ]
+        , Html.div
+            [ HA.class "column gap-l"
+            ]
+            [ Html.div
+                []
+                [ Html.text "Archipeladoku is Sudoku for "
+                , Html.a
+                    [ HA.href "https://archipelago.gg/"
+                    , HA.target "_blank"
+                    ]
+                    [ Html.text "Archipelago" ]
+                , Html.text ". You start with one board, and more boards have to be unlocked one block at a time. Each solved row, column, block, or entire board is a location. The blocks you have to unlock are your progression items."
+                ]
+            , Html.div
+                [ HA.class "column gap-s"
+                ]
+                [ Html.h3
+                    []
+                    [ Html.text "What options should I use? How long does this take?" ]
+                , Html.text "Think about how long it'd take you to solve a single board and extrapolate from that. Board clusters reduce solving time as later boards in a cluster will be partially solved when you get to them. Filler items can also reduce solving time. Without duplicate progression you will need every progression item to goal, so consider adding duplicate progression to allow earlier goaling. Fixed progression can be selected to ensure a more consistent progression."
+                ]
+            , Html.div
+                [ HA.class "column gap-s"
+                ]
+                [ Html.h3
+                    []
+                    [ Html.text "How can I reduce the number of 'Nothing' items?" ]
+                , Html.p
+                    []
+                    [ Html.text "Nothing items fill whatever slots remain after other items have been filled. As such you can increase the amount of other items with duplicate progression or by increasing filler ratios. You can reduce the number of locations by disabling location types (reducing progression items with bundling allows for more disabled locations)."
+                    ]
+                , Html.p
+                    []
+                    [ Html.text "In general it's recommended to not worry too much about the number of Nothing items. If you put pre-fill at 100% it keeps them out of the multiworld item pool, letting you treat them as unused locations."
+                    ]
+                ]
+            , Html.div
+                [ HA.class "column gap-s"
+                ]
+                [ Html.h3
+                    []
+                    [ Html.text "Where can I download the APWorld?" ]
+                , Html.div
+                    []
+                    [ Html.text "The latest version can be downloaded "
+                    , Html.a
+                        [ HA.href "https://github.com/galdiuz/archipeladoku/releases/latest/download/archipeladoku.apworld" ]
+                        [ Html.text "here" ]
+                    , Html.text "."
+                    ]
+                ]
+            , Html.div
+                [ HA.class "column gap-s"
+                ]
+                [ Html.h3
+                    []
+                    [ Html.text "Where is the source code?" ]
+                , Html.div
+                    []
+                    [ Html.text "The source code is available on "
+                    , Html.a
+                        [ HA.href "https://github.com/galdiuz/archipeladoku" ]
+                        [ Html.text "GitHub" ]
+                    , Html.text "."
+                    ]
+                ]
             ]
         ]
 
