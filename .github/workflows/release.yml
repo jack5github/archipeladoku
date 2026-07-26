@@ -1,0 +1,71 @@
+# Builds the .apworld and .yaml template and publishes them as release assets.
+# The version in the tag becomes the world_version in the .apworld manifest.
+name: Publish release
+
+on:
+  # Runs on pushes of version tags, e.g. v2026.07.21
+  push:
+    tags: ['v*']
+
+# Sets the GITHUB_TOKEN permissions to allow creating a release
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Checkout Archipelago
+        uses: actions/checkout@v5
+        with:
+          repository: ArchipelagoMW/Archipelago
+          path: Archipelago
+          ref: 0.6.7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install Archipelago dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -r requirements.txt
+          yes | python ModuleUpdate.py
+        working-directory: Archipelago
+
+      - name: Link world directory
+        run: |
+          ln -s "$GITHUB_WORKSPACE/apworld" Archipelago/worlds/archipeladoku
+
+      - name: Set world version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          jq --arg version "$version" '.world_version = $version' \
+            apworld/archipelago.json > archipelago.json.tmp
+          mv archipelago.json.tmp apworld/archipelago.json
+
+      - name: Generate .apworld
+        run: |
+          python Launcher.py "Build APWorlds" -- Archipeladoku
+        working-directory: Archipelago
+
+      - name: Generate .yaml template
+        run: |
+          python Launcher.py "Generate Template Options" -- --skip_open_folder
+        working-directory: Archipelago
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "" \
+            Archipelago/build/apworlds/archipeladoku.apworld \
+            Archipelago/Players/Templates/Archipeladoku.yaml

@@ -47,50 +47,8 @@ jobs:
       - name: Build client
         run: npm run build
         working-directory: client
-
-      # Build the .apworld and .yaml template
-
-      - name: Checkout Archipelago
-        uses: actions/checkout@v5
-        with:
-          repository: ArchipelagoMW/Archipelago
-          path: Archipelago
-          ref: 0.6.5
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: 'pip'
-
-      - name: Install Archipelago dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools
-          pip install -r requirements.txt
-          yes | python ModuleUpdate.py
-        working-directory: Archipelago
-
-      - name: Link world directory
-        run: |
-          ln -s "$GITHUB_WORKSPACE/apworld" Archipelago/worlds/archipeladoku
-
-      - name: Generate .apworld
-        run: |
-          python Launcher.py "Build APWorlds" -- Archipeladoku
-        working-directory: Archipelago
-
-      - name: Copy .apworld to dist
-        run: |
-          cp Archipelago/build/apworlds/archipeladoku.apworld client/dist/
-
-      - name: Generate .yaml template
-        run: |
-          python Launcher.py "Generate Template Options" -- --skip_open_folder
-        working-directory: Archipelago
-
-      - name: Copy .yaml to dist
-        run: |
-          cp Archipelago/Players/Templates/Archipeladoku.yaml client/dist/
+        env:
+          VITE_APP_VERSION: ${{ github.sha }}
 
       # Deploy to GitHub Pages
 
