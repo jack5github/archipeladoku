@@ -190,15 +190,24 @@ app.ports.saveGameState?.subscribe(data => {
     }
 })
 
-app.ports.scoutLocations?.subscribe(ids => {
+app.ports.scoutLocations?.subscribe(data => {
+    if (data.locations.length === 0) {
+        return
+    }
+
     try {
-        client.scout(ids, 2)
+        client.scout(data.locations, data.createHint ? 2 : 0)
             .then(scoutedItems => {
-                let data = []
+                const items = []
                 for (let item of scoutedItems) {
-                    data.push(itemData(item))
+                    items.push(itemData(item))
                 }
-                app.ports.receiveHints.send(data)
+
+                if (data.createHint) {
+                    app.ports.receiveHints.send(items)
+                } else {
+                    app.ports.receiveScoutedItems.send(items)
+                }
             })
     } catch (error) {
         console.error('Scout location error:', error)
@@ -310,7 +319,7 @@ client.items.on('itemsReceived', items => {
     for (let item of items) {
         data.push(itemData(item))
     }
-    app.ports.receiveHints.send(data)
+    app.ports.receiveScoutedItems.send(data)
 })
 
 client.room.on('locationsChecked', locations => {

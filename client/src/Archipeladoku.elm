@@ -46,7 +46,7 @@ port hintForItem : String -> Cmd msg
 port log : String -> Cmd msg
 port moveCellIntoView : ( Int, Int ) -> Cmd msg
 port saveGameState : Encode.Value -> Cmd msg
-port scoutLocations : List Int -> Cmd msg
+port scoutLocations : { locations : List Int, createHint : Bool } -> Cmd msg
 port sendMessage : String -> Cmd msg
 port sendPlayingStatus : () -> Cmd msg
 port setDeathLink : Bool -> Cmd msg
@@ -93,6 +93,7 @@ type alias Model =
     , cellRows : Dict ( Int, Int ) (List Area)
     , colorScheme : String
     , connectionHistory : List ConnectionHistoryEntry
+    , createHintsWhenScouting : Bool
     , current : Dict ( Int, Int ) CellValue
     , deathLinkEnabled : Bool
     , deathLinkInput : Bool
@@ -129,6 +130,7 @@ type alias Model =
     , highlightMode : HighlightMode
     , hints : Dict Int Hint
     , hintCost : Int
+    , hintedLocations : Set Int
     , hintPoints : Int
     , host : String
     , inputModifierDebounce : Int
@@ -229,6 +231,7 @@ type Msg
     | BundleSizeChanged Int
     | BundleSizeInputBlurred
     | BundleSizeInputChanged String
+    | CreateHintsWhenScoutingChanged Bool
     | EmojiTrapRatioChanged Int
     | EmojiTrapRatioInputBlurred
     | EmojiTrapRatioInputChanged String
@@ -254,10 +257,12 @@ type Msg
     | GotYamlFile File.File
     | GotOnlineGameSave Decode.Value
     | GotSaveGameTime Bool Time.Posix
+    | GotScoutedItems Decode.Value
     | GotSlotData Decode.Value
     | GotTimezone Time.Zone
     | HighlightModeChanged HighlightMode
     | HintItemPressed String
+    | HintLocationPressed Int
     | HostInputChanged String
     | InputModifierDebouncePassed Int
     | InputModifierHeld
@@ -292,6 +297,7 @@ type Msg
     | ResetClientSettingsPressed
     | ResetKeybindingsPressed
     | ResumeLocalGamePressed SavedGame
+    | ScoutAllPressed
     | ScoutLocationPressed Int
     | SecondPassed
     | SeedInputChanged String
@@ -366,6 +372,7 @@ init flagsValue =
       , cellRows = Dict.empty
       , colorScheme = "light dark"
       , connectionHistory = []
+      , createHintsWhenScouting = True
       , current = Dict.empty
       , deathLinkEnabled = False
       , deathLinkInput = False
@@ -402,6 +409,7 @@ init flagsValue =
       , highlightMode = HighlightNone
       , hints = Dict.empty
       , hintCost = 0
+      , hintedLocations = Set.empty
       , hintPoints = 0
       , host = ""
       , inputModifierDebounce = 0
@@ -496,6 +504,7 @@ subscriptions model =
         , receiveLocalGameSave GotLocalGameSave
         , receiveMessage GotMessage
         , receiveOnlineGameSave GotOnlineGameSave
+        , receiveScoutedItems GotScoutedItems
         , receiveSlotData GotSlotData
         , if List.any ((<) 0) (timers model) || not (List.isEmpty model.toastMessages) then
             Time.every 1000 (\_ -> SecondPassed)
@@ -677,6 +686,11 @@ update msg model =
                       )
                     ]
                 )
+            )
+
+        CreateHintsWhenScoutingChanged value ->
+            ( { model | createHintsWhenScouting = value }
+            , setLocalStorage ( "apdk-create-hints-when-scouting", if value then "1" else "0" )
             )
 
         DeathLinkInputChanged value ->
@@ -1097,30 +1111,8 @@ update msg model =
         GotHints value ->
             case Decode.decodeValue (Decode.list hintDecoder) value of
                 Ok hints ->
-                    ( { model
-                        | hints =
-                            List.foldl
-                                (\item acc ->
-                                    if item.receiverName == model.player then
-                                        Dict.insert item.itemId item acc
-
-                                    else
-                                        acc
-                                )
-                                model.hints
-                                hints
-                        , scoutedItems =
-                            List.foldl
-                                (\item acc ->
-                                    if item.senderName == model.player then
-                                        Dict.insert item.locationId item acc
-
-                                    else
-                                        acc
-                                )
-                                model.scoutedItems
-                                hints
-                      }
+                    ( addKnownItems hints model
+                        |> markHintedLocations hints
                     , Cmd.none
                     )
 
@@ -1215,6 +1207,18 @@ update msg model =
                 , Cmd.none
                 )
 
+        GotScoutedItems value ->
+            case Decode.decodeValue (Decode.list hintDecoder) value of
+                Ok hints ->
+                    ( addKnownItems hints model
+                    , Cmd.none
+                    )
+
+                Err err ->
+                    ( model
+                    , Cmd.none
+                    )
+
         GotSlotData value ->
             case Decode.decodeValue slotDataDecoder value of
                 Ok slotData ->
@@ -1251,6 +1255,11 @@ update msg model =
         HintItemPressed name ->
             ( model
             , hintForItem name
+            )
+
+        HintLocationPressed id ->
+            ( model
+            , scoutLocations { locations = [ id ], createHint = True }
             )
 
         HostInputChanged value ->
@@ -1680,6 +1689,7 @@ update msg model =
                 , autoRemoveInvalidCandidates = defaults.autoRemoveInvalidCandidates
                 , candidateLayout = defaults.candidateLayout
                 , colorScheme = defaults.colorScheme
+                , createHintsWhenScouting = defaults.createHintsWhenScouting
                 , emojiTrapVariant = defaults.emojiTrapVariant
                 , fireworkOnNothing = defaults.fireworkOnNothing
                 , keyBindings = defaults.keyBindings
@@ -1701,25 +1711,11 @@ update msg model =
             )
                 |> andThen (updateState False)
 
+        ScoutAllPressed ->
+            scoutLocationIds (scoutableLocations model) model
+
         ScoutLocationPressed id ->
-            if model.gameIsLocal then
-                case Dict.get id model.unlockMap of
-                    Just item ->
-                        ( { model
-                            | scoutedItems = Dict.insert id (createHint id item) model.scoutedItems
-                          }
-                        , Cmd.none
-                        )
-
-                    Nothing ->
-                        ( model
-                        , Cmd.none
-                        )
-
-            else
-                ( model
-                , scoutLocations [ id ]
-                )
+            scoutLocationIds (Set.singleton id) model
 
         SecondPassed ->
             ( { model
@@ -4030,6 +4026,11 @@ updateFromLocalStorageValue key value model =
             , Cmd.none
             )
 
+        "apdk-create-hints-when-scouting" ->
+            ( { model | createHintsWhenScouting = value == "1" }
+            , Cmd.none
+            )
+
         "apdk-emoji-trap-variant" ->
             ( { model | emojiTrapVariant = emojiTrapVariantFromString value }
             , Cmd.none
@@ -4493,11 +4494,59 @@ updateStateScoutLocations model =
                 model.scoutedItems
       }
     , if not model.gameIsLocal && model.locationScouting == ScoutingAuto then
-        scoutLocations (Set.toList model.pendingScoutLocations)
+        scoutLocations
+            { locations = Set.toList model.pendingScoutLocations
+            , createHint = model.createHintsWhenScouting
+            }
 
       else
         Cmd.none
     )
+
+
+addKnownItems : List Hint -> Model -> Model
+addKnownItems hints model =
+    { model
+        | hints =
+            List.foldl
+                (\item acc ->
+                    if item.receiverName == model.player then
+                        Dict.insert item.itemId item acc
+
+                    else
+                        acc
+                )
+                model.hints
+                hints
+        , scoutedItems =
+            List.foldl
+                (\item acc ->
+                    if item.senderName == model.player then
+                        Dict.insert item.locationId item acc
+
+                    else
+                        acc
+                )
+                model.scoutedItems
+                hints
+    }
+
+
+markHintedLocations : List Hint -> Model -> Model
+markHintedLocations hints model =
+    { model
+        | hintedLocations =
+            List.foldl
+                (\item acc ->
+                    if item.senderName == model.player then
+                        Set.insert item.locationId acc
+
+                    else
+                        acc
+                )
+                model.hintedLocations
+                hints
+    }
 
 
 scoutLocalLocations : Model -> Set Int -> Dict Int Hint
@@ -6194,24 +6243,56 @@ loadSavedGame save model =
 
 visibleLocations : Model -> Set Int
 visibleLocations model =
-    [ ( model.puzzleAreas.blocks, cellToBlockId )
-    , ( model.puzzleAreas.boards, cellToBoardId )
-    , ( model.puzzleAreas.cols, cellToColId )
-    , ( model.puzzleAreas.rows, cellToRowId )
+    [ ( "blocks", model.puzzleAreas.blocks, cellToBlockId )
+    , ( "boards", model.puzzleAreas.boards, cellToBoardId )
+    , ( "columns", model.puzzleAreas.cols, cellToColId )
+    , ( "rows", model.puzzleAreas.rows, cellToRowId )
     ]
         |> List.concatMap
-            (\( areas, toId ) ->
-                List.filterMap
-                    (\area ->
-                        if List.all (cellIsVisible model) area.cells then
-                            Just (toId ( area.startRow, area.startCol ))
+            (\( locationType, areas, toId ) ->
+                if Set.member locationType model.disabledLocations then
+                    []
 
-                        else
-                            Nothing
-                    )
-                    areas
+                else
+                    List.filterMap
+                        (\area ->
+                            if List.all (cellIsVisible model) area.cells then
+                                Just (toId ( area.startRow, area.startCol ))
+
+                            else
+                                Nothing
+                        )
+                        areas
             )
         |> Set.fromList
+
+
+scoutableLocations : Model -> Set Int
+scoutableLocations model =
+    if model.locationScouting == ScoutingDisabled then
+        Set.empty
+
+    else if not model.gameIsLocal && model.createHintsWhenScouting then
+        Set.diff (visibleLocations model) model.hintedLocations
+
+    else
+        Set.diff (visibleLocations model) (Set.fromList (Dict.keys model.scoutedItems))
+
+
+scoutLocationIds : Set Int -> Model -> ( Model, Cmd Msg )
+scoutLocationIds ids model =
+    if model.gameIsLocal then
+        ( { model | scoutedItems = scoutLocalLocations model ids }
+        , Cmd.none
+        )
+
+    else
+        ( model
+        , scoutLocations
+            { locations = Set.toList ids
+            , createHint = model.createHintsWhenScouting
+            }
+        )
 
 
 restoreScoutedItems : Model -> Model
@@ -8724,6 +8805,11 @@ viewInfoPanelInput model =
 
 viewInfoPanelSelected : Model -> Html Msg
 viewInfoPanelSelected model =
+    let
+        scoutable : Set Int
+        scoutable =
+            scoutableLocations model
+    in
     Html.details
         [ HA.class "info-panel-details"
         ]
@@ -8778,6 +8864,7 @@ viewInfoPanelSelected model =
                             |> Maybe.withDefault []
                             |> List.sortBy .startRow
                         )
+
                 , if model.gameIsLocal then
                     []
 
@@ -8795,6 +8882,52 @@ viewInfoPanelSelected model =
                                 , ")"
                                 ]
                             )
+                        ]
+                    ]
+
+                , if model.locationScouting == ScoutingDisabled then
+                    []
+
+                  else
+                    [ Html.div
+                        [ HA.class "row gap-m"
+                        , HA.style "align-items" "center"
+                        ]
+                        [ Html.button
+                            [ HA.class "button"
+                            , HA.disabled (Set.isEmpty scoutable)
+                            , HE.onClick ScoutAllPressed
+                            ]
+                            [ Html.text
+                                (String.concat
+                                    [ if model.gameIsLocal || not model.createHintsWhenScouting then
+                                        "Scout all ("
+
+                                      else
+                                        "Scout and hint all ("
+                                    , String.fromInt (Set.size scoutable)
+                                    , ")"
+                                    ]
+                                )
+                            ]
+                        ]
+                    ]
+
+                , if model.gameIsLocal || model.locationScouting == ScoutingDisabled then
+                    []
+
+                  else
+                    [ Html.label
+                        [ HA.class "row gap-s"
+                        , HA.style "align-items" "center"
+                        ]
+                        [ Html.input
+                            [ HA.type_ "checkbox"
+                            , HA.checked model.createHintsWhenScouting
+                            , HE.onCheck CreateHintsWhenScoutingChanged
+                            ]
+                            []
+                        , Html.text "Create server hints when scouting"
                         ]
                     ]
                 ]
@@ -9402,6 +9535,7 @@ viewBlockUnlockInfo model block =
             Nothing ->
                 Html.div
                     [ HA.class "row gap-m"
+                    , HA.style "align-items" "center"
                     ]
                     [ Html.text
                         (case maybeBundle of
@@ -9500,22 +9634,41 @@ viewReward model id area =
         Just hint ->
             Html.div
                 []
-                [ Html.text
-                    (String.concat
-                        [ "Reward: "
-                        , hint.itemName
-                        , " ("
-                        , String.join
-                            ", "
-                            (List.filter (not << String.isEmpty)
-                                [ itemClassToString hint.itemClass
-                                , hint.receiverAlias
-                                , hint.gameName
-                                ]
-                            )
-                        , ")"
-                        ]
-                    )
+                [ Html.div
+                    [ HA.class "row gap-m"
+                    , HA.style "align-items" "center"
+                    ]
+                    [ Html.text
+                        (String.concat
+                            [ "Reward: "
+                            , hint.itemName
+                            , " ("
+                            , String.join
+                                ", "
+                                (List.filter (not << String.isEmpty)
+                                    [ itemClassToString hint.itemClass
+                                    , hint.receiverAlias
+                                    , hint.gameName
+                                    ]
+                                )
+                            , ")"
+                            ]
+                        )
+                    , if
+                        model.gameIsLocal
+                            || model.locationScouting == ScoutingDisabled
+                            || Set.member id model.hintedLocations
+                            || Set.member id model.solvedLocations
+                      then
+                        Html.text ""
+
+                      else
+                        Html.button
+                            [ HA.class "button"
+                            , HE.onClick (HintLocationPressed id)
+                            ]
+                            [ Html.text "Hint" ]
+                    ]
                 , case bundleContents model hint of
                     [] ->
                         Html.text ""
