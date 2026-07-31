@@ -4487,17 +4487,7 @@ updateStateScoutLocations model =
         | pendingScoutLocations = Set.empty
         , scoutedItems =
             if model.gameIsLocal && model.locationScouting == ScoutingAuto then
-                Set.foldl
-                    (\id scoutedItems ->
-                        case Dict.get id model.unlockMap of
-                            Just item ->
-                                Dict.insert id (createHint id item) scoutedItems
-
-                            Nothing ->
-                                scoutedItems
-                    )
-                    model.scoutedItems
-                    model.pendingScoutLocations
+                scoutLocalLocations model model.pendingScoutLocations
 
             else
                 model.scoutedItems
@@ -4508,6 +4498,21 @@ updateStateScoutLocations model =
       else
         Cmd.none
     )
+
+
+scoutLocalLocations : Model -> Set Int -> Dict Int Hint
+scoutLocalLocations model ids =
+    Set.foldl
+        (\id scoutedItems ->
+            case Dict.get id model.unlockMap of
+                Just item ->
+                    Dict.insert id (createHint id item) scoutedItems
+
+                Nothing ->
+                    scoutedItems
+        )
+        model.scoutedItems
+        ids
 
 
 updateStateGoal : Model -> ( Model, Cmd Msg )
@@ -6184,6 +6189,47 @@ loadSavedGame save model =
                 Set.empty
                 save.unlockedBlocks
     }
+        |> restoreScoutedItems
+
+
+visibleLocations : Model -> Set Int
+visibleLocations model =
+    [ ( model.puzzleAreas.blocks, cellToBlockId )
+    , ( model.puzzleAreas.boards, cellToBoardId )
+    , ( model.puzzleAreas.cols, cellToColId )
+    , ( model.puzzleAreas.rows, cellToRowId )
+    ]
+        |> List.concatMap
+            (\( areas, toId ) ->
+                List.filterMap
+                    (\area ->
+                        if List.all (cellIsVisible model) area.cells then
+                            Just (toId ( area.startRow, area.startCol ))
+
+                        else
+                            Nothing
+                    )
+                    areas
+            )
+        |> Set.fromList
+
+
+restoreScoutedItems : Model -> Model
+restoreScoutedItems model =
+    if model.gameIsLocal then
+        { model
+            | scoutedItems =
+                scoutLocalLocations model
+                    (if model.locationScouting == ScoutingAuto then
+                        Set.union model.solvedLocations (visibleLocations model)
+
+                     else
+                        model.solvedLocations
+                    )
+        }
+
+    else
+        model
 
 
 positionBoards : Int -> Int -> Int -> List ( Int, Int )
