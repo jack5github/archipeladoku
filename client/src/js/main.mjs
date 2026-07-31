@@ -54,6 +54,14 @@ function itemData(item) {
     }
 }
 
+function handleHints(networkHints) {
+    const data = []
+    for (let networkHint of networkHints) {
+        data.push(itemData(new Archipelago.Hint(client, networkHint).item))
+    }
+    app.ports.receiveHints.send(data)
+}
+
 function unpackSavedGame(savedGame) {
     savedGame.coordinates = Array.from(savedGame.coordinates)
     savedGame.current = Array.from(savedGame.current)
@@ -114,6 +122,18 @@ app.ports.connect?.subscribe(data => {
         .then(slotData => {
             app.ports.receiveHintCost.send(client.room.hintCost)
             app.ports.receiveSlotData.send(slotData)
+
+            const hintsKey = `_read_hints_${client.players.self.team}_${client.players.self.slot}`
+
+            // archipelago.js diffs the hint list by index to decide what
+            // changed, but the server's list is unordered, so its cache keeps
+            // stale entries and drops new hints. Subscribing to the key
+            // directly gives us the full list on every change instead.
+            client.storage.notify([ hintsKey ], (_, networkHints) => handleHints(networkHints))
+                .then(data => handleHints(data[hintsKey] ?? []))
+                .catch(error => {
+                    console.error('Hint subscription error:', error)
+                })
 
             IDB.get(slotData.seed, store)
                 .then(savedGame => {
@@ -332,22 +352,6 @@ client.room.on('hintPointsUpdated', (oldValue, newValue) => {
 
 client.room.on('hintCostUpdated', (oldCost, newCost) => {
     app.ports.receiveHintCost.send(newCost)
-})
-
-client.items.on('hintsInitialized', hints => {
-    const data = []
-    for (let hint of hints) {
-        data.push(itemData(hint.item))
-    }
-    app.ports.receiveHints.send(data)
-})
-
-client.items.on('hintReceived', _ => {
-    let data = []
-    for (let hint of client.items.hints) {
-        data.push(itemData(hint.item))
-    }
-    app.ports.receiveHints.send(data)
 })
 
 client.deathLink.on('deathReceived', (source, time, cause) => {
