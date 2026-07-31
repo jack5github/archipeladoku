@@ -2419,6 +2419,7 @@ type Item
 type alias Hint =
     { locationId : Int
     , locationName : String
+    , locationGameName : String
     , itemId : Int
     , itemName : String
     , itemClass : ItemClass
@@ -3155,6 +3156,7 @@ hintDecoder =
     Decode.succeed Hint
         |> DecodeExtra.andMap (Decode.field "locationId" Decode.int)
         |> DecodeExtra.andMap (Decode.field "locationName" Decode.string)
+        |> DecodeExtra.andMap (Decode.field "locationGameName" Decode.string)
         |> DecodeExtra.andMap (Decode.field "itemId" Decode.int)
         |> DecodeExtra.andMap (Decode.field "itemName" Decode.string)
         |> DecodeExtra.andMap (Decode.field "itemClass" itemClassDecoder)
@@ -5798,6 +5800,7 @@ createHint : Int -> Item -> Hint
 createHint locationId item =
     { locationId = locationId
     , locationName = ""
+    , locationGameName = ""
     , itemId = itemToId item
     , itemName = itemName item
     , itemClass = itemClassification item
@@ -9344,7 +9347,7 @@ viewBlockUnlockInfo model block =
                             , " ("
                             , item.senderAlias
                             , ", "
-                            , item.gameName
+                            , item.locationGameName
                             , ")"
                             ]
                         )

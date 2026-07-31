@@ -42,6 +42,7 @@ function itemData(item) {
     return {
         locationId: item.locationId,
         locationName: item.locationName,
+        locationGameName: item.locationGame,
         itemId: item.id,
         itemName: item.name,
         senderAlias: item.sender.alias,
